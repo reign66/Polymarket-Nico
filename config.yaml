@@ -1,0 +1,49 @@
+bots:
+  - nba
+  - f1
+  - crypto
+  - geopolitics
+  - politics
+
+claude_models:
+  classifier: claude-haiku-4-5-20251001
+  decider: claude-sonnet-4-5-20250929
+
+kelly_fraction: 0.25
+
+min_edge_threshold:
+  haiku: 0.12
+  sonnet: 0.15
+
+min_haiku_score: 0.70
+max_daily_sonnet_calls_per_bot: 5
+min_market_volume: 10000
+max_spread: 0.05
+
+capital_limits:
+  small_cap_threshold: 2000
+  small_cap_daily_pct: 0.30
+  standard_daily_pct: 0.40
+  exception_bonus_pct: 0.20
+  exception_min_edge: 0.25
+  exception_min_volume: 50000
+
+circuit_breakers:
+  daily_loss_pct: 0.10
+  weekly_drawdown_pct: 0.25
+  max_open_positions: 5
+  max_monthly_api_cost_eur: 15
+
+exit_rules:
+  take_profit_pct: 0.20
+  stop_loss_pct: 0.15
+  near_resolution_hours: 48
+
+paper_trading: true
+
+bot_cycles:
+  nba: 15
+  f1: 30
+  crypto: 10
+  geopolitics: 30
+  politics: 20

@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bot Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg: #0A0E1A;
+            --card: #111827;
+            --card-border: #1F2937;
+            --accent: #00F5A0;
+            --accent-dim: #00C47D;
+            --red: #EF4444;
+            --yellow: #F59E0B;
+            --text: #E5E7EB;
+            --text-dim: #9CA3AF;
+            --green: #10B981;
+            --blue: #3B82F6;
+        }
+
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Courier New', monospace;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 1rem;
+        }
+
+        /* ── HEADER ── */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 1.5rem;
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            margin-bottom: 1.5rem;
+        }
+        .header-left { display: flex; align-items: center; gap: 1rem; }
+        .header h1 {
+            font-size: 1.1rem;
+            color: var(--accent);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        .header-right { display: flex; align-items: center; gap: 1rem; }
+        .status {
+            padding: 0.3rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .status-live   { background: rgba(16,185,129,0.15); color: var(--green); border: 1px solid var(--green); }
+        .status-paper  { background: rgba(245,158,11,0.15); color: var(--yellow); border: 1px solid var(--yellow); }
+        .status-paused { background: rgba(239,68,68,0.15);  color: var(--red);    border: 1px solid var(--red); }
+        .clock { color: var(--text-dim); font-size: 0.8rem; }
+        .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* ── GRID LAYOUTS ── */
+        .grid { display: grid; gap: 1rem; }
+        .grid-kpis { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 1rem; }
+        .grid-main { grid-template-columns: 1fr; margin-bottom: 1rem; }
+        .grid-two   { grid-template-columns: 1fr 1fr; margin-bottom: 1rem; }
+        .grid-niches { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 1rem; }
+
+        /* ── CARDS ── */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1.2rem;
+        }
+        .card-title {
+            font-size: 0.72rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .card-title-icon { color: var(--accent); }
+
+        /* ── KPI CARDS ── */
+        .kpi-card {
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1.2rem 0.8rem;
+            text-align: center;
+            transition: border-color 0.2s;
+        }
+        .kpi-card:hover { border-color: rgba(0,245,160,0.3); }
+        .kpi-label {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 0.4rem;
+        }
+        .kpi-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 0.2rem 0 0.3rem;
+        }
+        .kpi-sub {
+            font-size: 0.65rem;
+            color: var(--text-dim);
+        }
+        .positive { color: var(--green); }
+        .negative { color: var(--red); }
+        .neutral  { color: var(--text); }
+        .accent   { color: var(--accent); }
+        .warning  { color: var(--yellow); }
+
+        /* ── TABLES ── */
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+        th {
+            text-align: left;
+            padding: 0.55rem 0.8rem;
+            color: var(--text-dim);
+            font-weight: 600;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            border-bottom: 1px solid var(--card-border);
+            white-space: nowrap;
+        }
+        td {
+            padding: 0.55rem 0.8rem;
+            border-bottom: 1px solid rgba(31,41,55,0.4);
+            white-space: nowrap;
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: rgba(0,245,160,0.03); }
+        .empty-row td { color: var(--text-dim); font-style: italic; text-align: center; padding: 1.5rem; }
+
+        /* ── SIGNAL FEED ── */
+        .signal-feed { max-height: 380px; overflow-y: auto; }
+        .signal-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.6rem;
+            padding: 0.55rem 0;
+            border-bottom: 1px solid rgba(31,41,55,0.3);
+            font-size: 0.78rem;
+        }
+        .signal-item:last-child { border-bottom: none; }
+        .signal-meta { display: flex; flex-direction: column; gap: 0.2rem; flex: 1; min-width: 0; }
+        .signal-title {
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .signal-info { color: var(--text-dim); font-size: 0.68rem; }
+        .signal-time { font-size: 0.65rem; color: var(--text-dim); white-space: nowrap; }
+
+        /* ── BADGES ── */
+        .badge {
+            padding: 0.18rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+            min-width: 55px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .badge-bet      { background: rgba(16,185,129,0.2);  color: var(--green); }
+        .badge-skip     { background: rgba(245,158,11,0.2);  color: var(--yellow); }
+        .badge-filtered { background: rgba(107,114,128,0.2); color: var(--text-dim); }
+        .badge-blocked  { background: rgba(239,68,68,0.2);   color: var(--red); }
+
+        .niche-tag {
+            padding: 0.13rem 0.4rem;
+            border-radius: 3px;
+            font-size: 0.58rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            background: rgba(0,245,160,0.1);
+            color: var(--accent);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .dir-yes  { color: var(--green); font-weight: 700; }
+        .dir-no   { color: var(--red);   font-weight: 700; }
+
+        /* ── NICHE STATS ── */
+        .niche-card {
+            background: var(--card);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 1rem;
+        }
+        .niche-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.8rem;
+        }
+        .niche-name {
+            font-size: 0.8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent);
+        }
+        .niche-stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+        }
+        .niche-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 0.1rem;
+        }
+        .niche-stat-label { font-size: 0.6rem; color: var(--text-dim); text-transform: uppercase; }
+        .niche-stat-value { font-size: 0.9rem; font-weight: 600; }
+
+        /* ── CIRCUIT BREAKERS ── */
+        .cb-list { display: flex; flex-direction: column; gap: 0.8rem; }
+        .cb-item {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+        .cb-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .cb-name { font-size: 0.78rem; color: var(--text); }
+        .cb-values { font-size: 0.72rem; color: var(--text-dim); }
+        .cb-ok-badge {
+            font-size: 0.62rem;
+            font-weight: 700;
+            padding: 0.15rem 0.4rem;
+            border-radius: 3px;
+        }
+        .cb-ok-true  { background: rgba(16,185,129,0.2); color: var(--green); }
+        .cb-ok-false { background: rgba(239,68,68,0.2);  color: var(--red); }
+        .cb-bar {
+            width: 100%;
+            height: 5px;
+            background: rgba(255,255,255,0.07);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .cb-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+        .cb-safe   { background: var(--green); }
+        .cb-warn   { background: var(--yellow); }
+        .cb-danger { background: var(--red); }
+
+        /* ── IMPROVEMENTS ── */
+        .improvement-list { display: flex; flex-direction: column; gap: 0.3rem; }
+        .improvement-niche {
+            font-size: 0.68rem;
+            font-weight: 700;
+            color: var(--accent);
+            text-transform: uppercase;
+            margin-top: 0.6rem;
+            margin-bottom: 0.2rem;
+        }
+        .improvement-item {
+            font-size: 0.78rem;
+            color: var(--text-dim);
+            padding: 0.2rem 0;
+            display: flex;
+            gap: 0.4rem;
+        }
+        .improvement-item::before { content: '→'; color: var(--accent); flex-shrink: 0; }
+        .improvement-empty { font-size: 0.78rem; color: var(--text-dim); font-style: italic; }
+
+        /* ── BUTTONS ── */
+        .btn-group {
+            display: flex;
+            gap: 0.8rem;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 0.55rem 1.1rem;
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.78rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+        .btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,245,160,0.05); }
+        .btn:active { transform: scale(0.97); }
+        .btn-danger { border-color: var(--red); color: var(--red); }
+        .btn-danger:hover { background: rgba(239,68,68,0.1); border-color: var(--red); color: var(--red); }
+        .btn-success { border-color: var(--green); color: var(--green); }
+        .btn-success:hover { background: rgba(16,185,129,0.1); border-color: var(--green); color: var(--green); }
+        .btn-neutral { border-color: var(--blue); color: var(--blue); }
+        .btn-neutral:hover { background: rgba(59,130,246,0.1); border-color: var(--blue); color: var(--blue); }
+
+        /* ── CHART ── */
+        .chart-container {
+            position: relative;
+            height: 260px;
+            width: 100%;
+        }
+
+        /* ── SECTION SPACING ── */
+        .section { margin-bottom: 1rem; }
+
+        /* ── DIVIDER ── */
+        .divider {
+            border: none;
+            border-top: 1px solid var(--card-border);
+            margin: 1rem 0;
+        }
+
+        /* ── TOAST ── */
+        #toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            background: var(--card);
+            border: 1px solid var(--accent);
+            border-radius: 8px;
+            padding: 0.7rem 1.2rem;
+            font-size: 0.8rem;
+            color: var(--accent);
+            opacity: 0;
+            transform: translateY(10px);
+            transition: all 0.3s;
+            z-index: 1000;
+            pointer-events: none;
+        }
+        #toast.show { opacity: 1; transform: translateY(0); }
+
+        /* ── LOADING SKELETON ── */
+        .skeleton {
+            background: linear-gradient(90deg, var(--card-border) 25%, rgba(31,41,55,0.8) 50%, var(--card-border) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 4px;
+            height: 1rem;
+        }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* ── SCROLLBAR ── */
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #374151; }
+
+        /* ── REFRESH INDICATOR ── */
+        .refresh-bar {
+            position: fixed;
+            top: 0; left: 0;
+            height: 2px;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.1s linear;
+            z-index: 999;
+        }
+
+        /* ── RESPONSIVE ── */
+        @media (min-width: 1400px) {
+            .grid-main { grid-template-columns: 2fr 1fr; }
+            .grid-two  { grid-template-columns: 1fr 1fr; }
+        }
+        @media (min-width: 900px) {
+            .grid-two  { grid-template-columns: 1fr 1fr; }
+        }
+        @media (max-width: 899px) {
+            .grid-two  { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 768px) {
+            body { padding: 0.5rem; }
+            .header { flex-direction: column; gap: 0.6rem; text-align: center; }
+            .header-left, .header-right { flex-wrap: wrap; justify-content: center; }
+            .kpi-value { font-size: 1.2rem; }
+            .grid-kpis { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+        }
+        @media (max-width: 480px) {
+            .grid-kpis { grid-template-columns: repeat(2, 1fr); }
+            table { font-size: 0.7rem; }
+            th, td { padding: 0.4rem 0.5rem; }
+            .chart-container { height: 200px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Refresh progress bar -->
+<div class="refresh-bar" id="refreshBar"></div>
+
+<!-- Toast notification -->
+<div id="toast"></div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION A — HEADER
+═══════════════════════════════════════════════════ -->
+<header class="header section">
+    <div class="header-left">
+        <div class="dot" id="liveDot"></div>
+        <h1>⬡ Polymarket Bot</h1>
+        <span id="statusBadge" class="status status-paper">PAPER</span>
+    </div>
+    <div class="header-right">
+        <span class="clock" id="clock">--:--:--</span>
+    </div>
+</header>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION B — KPI CARDS
+═══════════════════════════════════════════════════ -->
+<div class="grid grid-kpis section">
+    <div class="kpi-card">
+        <div class="kpi-label">Capital</div>
+        <div class="kpi-value neutral" id="kpiCapital">—</div>
+        <div class="kpi-sub">USDC disponible</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">P&amp;L Total</div>
+        <div class="kpi-value" id="kpiPnlTotal">—</div>
+        <div class="kpi-sub">réalisé + latent</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">P&amp;L Latent</div>
+        <div class="kpi-value" id="kpiPnlLatent">—</div>
+        <div class="kpi-sub">positions ouvertes</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Positions</div>
+        <div class="kpi-value accent" id="kpiOpenPos">—</div>
+        <div class="kpi-sub">ouvertes actives</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Win Rate 30j</div>
+        <div class="kpi-value" id="kpiWinRate">—</div>
+        <div class="kpi-sub">trades gagnants</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">ROI Mois</div>
+        <div class="kpi-value" id="kpiRoi">—</div>
+        <div class="kpi-sub">retour mensuel</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Coût API / mois</div>
+        <div class="kpi-value warning" id="kpiApiCost">—</div>
+        <div class="kpi-sub">budget Claude AI</div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION C — P&L CHART
+═══════════════════════════════════════════════════ -->
+<div class="grid grid-main section">
+    <div class="card">
+        <div class="card-title">
+            <span class="card-title-icon">▲</span> P&amp;L Cumulatif — 30 derniers jours
+        </div>
+        <div class="chart-container">
+            <canvas id="pnlChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION D — OPEN POSITIONS
+═══════════════════════════════════════════════════ -->
+<div class="card section">
+    <div class="card-title">
+        <span class="card-title-icon">◈</span>
+        Positions Ouvertes
+        <span id="openPosCount" style="margin-left:auto; font-size:0.75rem; color:var(--accent);"></span>
+    </div>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Niche</th>
+                    <th>Marché</th>
+                    <th>Dir.</th>
+                    <th>Entrée</th>
+                    <th>Actuel</th>
+                    <th>Taille</th>
+                    <th>P&amp;L Latent</th>
+                    <th>Score</th>
+                    <th>Edge</th>
+                    <th>Ouvert le</th>
+                </tr>
+            </thead>
+            <tbody id="positionsBody">
+                <tr class="empty-row"><td colspan="10">Aucune position ouverte</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION E — POSITIONS HISTORY
+═══════════════════════════════════════════════════ -->
+<div class="card section">
+    <div class="card-title">
+        <span class="card-title-icon">◇</span>
+        Historique Positions Fermées
+        <span style="margin-left:auto; font-size:0.72rem; color:var(--text-dim);">20 dernières</span>
+    </div>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Niche</th>
+                    <th>Marché</th>
+                    <th>Dir.</th>
+                    <th>Entrée</th>
+                    <th>Sortie</th>
+                    <th>Taille</th>
+                    <th>P&amp;L Réalisé</th>
+                    <th>Raison</th>
+                    <th>Fermé le</th>
+                </tr>
+            </thead>
+            <tbody id="historyBody">
+                <tr class="empty-row"><td colspan="9">Aucun historique disponible</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION F + H — SIGNALS FEED + CIRCUIT BREAKERS
+═══════════════════════════════════════════════════ -->
+<div class="grid grid-two section">
+
+    <!-- Signals feed -->
+    <div class="card">
+        <div class="card-title">
+            <span class="card-title-icon">◉</span>
+            Signal Feed
+            <span style="margin-left:auto; font-size:0.72rem; color:var(--text-dim);">30 derniers</span>
+        </div>
+        <div class="signal-feed" id="signalFeed">
+            <div class="signal-item">
+                <span style="color:var(--text-dim); font-style:italic; font-size:0.78rem;">Chargement des signaux...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Circuit Breakers -->
+    <div class="card">
+        <div class="card-title">
+            <span class="card-title-icon">⊘</span>
+            Circuit Breakers
+        </div>
+        <div class="cb-list" id="circuitBreakers">
+            <!-- Filled by JS -->
+            <div style="color:var(--text-dim); font-size:0.78rem; font-style:italic;">Chargement...</div>
+        </div>
+
+        <hr class="divider">
+
+        <!-- API Cost mini widget -->
+        <div class="card-title" style="margin-bottom:0.6rem;">
+            <span class="card-title-icon">$</span> Coûts API Claude
+        </div>
+        <div id="apiCostWidget" style="font-size:0.78rem; color:var(--text-dim);">
+            Chargement...
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION G — NICHE STATS
+═══════════════════════════════════════════════════ -->
+<div class="section">
+    <div class="card-title" style="padding: 0 0 0.6rem 0.2rem;">
+        <span class="card-title-icon">⊞</span>
+        Statistiques par Niche
+    </div>
+    <div class="grid grid-niches" id="nicheGrid">
+        <!-- Filled by JS -->
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION I — IMPROVEMENT SUGGESTIONS
+═══════════════════════════════════════════════════ -->
+<div class="card section">
+    <div class="card-title">
+        <span class="card-title-icon">✦</span>
+        Suggestions d'Amélioration par Bot
+    </div>
+    <div id="improvementsList" class="improvement-list">
+        <span class="improvement-empty">Aucune suggestion disponible</span>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION J — CONTROLS
+═══════════════════════════════════════════════════ -->
+<div class="card section">
+    <div class="card-title">
+        <span class="card-title-icon">⊙</span>
+        Contrôles Bot
+    </div>
+    <div class="btn-group">
+        <button class="btn btn-danger" onclick="pauseAll()">⏸ Pause Tous</button>
+        <button class="btn btn-success" onclick="resumeAll()">▶ Reprendre</button>
+        <button class="btn btn-neutral" onclick="forceRefresh()">↺ Rafraîchir</button>
+        <button class="btn" onclick="exportData()">↓ Exporter JSON</button>
+    </div>
+    <div style="margin-top:0.8rem; font-size:0.72rem; color:var(--text-dim);" id="lastRefreshed">
+        Dernière mise à jour : —
+    </div>
+</div>
+
+<!-- ── FOOTER ── -->
+<footer style="text-align:center; padding:1rem 0; color:var(--text-dim); font-size:0.68rem; letter-spacing:1px;">
+    POLYMARKET BOT &nbsp;•&nbsp; AUTO-REFRESH 30s &nbsp;•&nbsp; <span id="footerDate">—</span>
+</footer>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+═══════════════════════════════════════════════════════════════════════ -->
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────
+let pnlChart = null;
+let cachedData = {};
+let refreshTimer = null;
+let refreshProgress = 0;
+let progressTimer = null;
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+
+async function fetchJSON(url) {
+    try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await res.json();
+    } catch (e) {
+        console.error(`[fetchJSON] ${url}:`, e.message);
+        return null;
+    }
+}
+
+function fmt(val, decimals = 2, prefix = '') {
+    if (val === null || val === undefined || isNaN(val)) return '—';
+    const n = parseFloat(val);
+    return prefix + n.toFixed(decimals);
+}
+
+function fmtUSDC(val) {
+    if (val === null || val === undefined || isNaN(val)) return '—';
+    return '$' + parseFloat(val).toFixed(2);
+}
+
+function fmtPct(val) {
+    if (val === null || val === undefined || isNaN(val)) return '—';
+    const n = parseFloat(val) * 100;
+    return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+function fmtDate(isoStr) {
+    if (!isoStr) return '—';
+    try {
+        const d = new Date(isoStr);
+        return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })
+            + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    } catch (_) { return isoStr; }
+}
+
+function fmtTimeAgo(isoStr) {
+    if (!isoStr) return '—';
+    try {
+        const diff = Date.now() - new Date(isoStr).getTime();
+        const m = Math.floor(diff / 60000);
+        if (m < 1) return 'à l\'instant';
+        if (m < 60) return `${m}m`;
+        const h = Math.floor(m / 60);
+        if (h < 24) return `${h}h`;
+        return `${Math.floor(h / 24)}j`;
+    } catch (_) { return '—'; }
+}
+
+function colorClass(val) {
+    const n = parseFloat(val);
+    if (isNaN(n) || n === 0) return 'neutral';
+    return n > 0 ? 'positive' : 'negative';
+}
+
+function el(id) { return document.getElementById(id); }
+
+function showToast(msg, duration = 2500) {
+    const t = el('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), duration);
+}
+
+function startProgressBar() {
+    refreshProgress = 0;
+    clearInterval(progressTimer);
+    const bar = el('refreshBar');
+    bar.style.width = '0%';
+    progressTimer = setInterval(() => {
+        refreshProgress += (100 / 30); // 30s total
+        bar.style.width = Math.min(refreshProgress, 95) + '%';
+    }, 1000);
+}
+
+function finishProgressBar() {
+    clearInterval(progressTimer);
+    const bar = el('refreshBar');
+    bar.style.width = '100%';
+    setTimeout(() => { bar.style.width = '0%'; }, 400);
+}
+
+// ── Clock ──────────────────────────────────────────────────────────────────
+
+function updateClock() {
+    const now = new Date();
+    el('clock').textContent = now.toLocaleString('fr-FR', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+    el('footerDate').textContent = now.toLocaleDateString('fr-FR', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+    });
+}
+
+// ── Section A: Status badge ────────────────────────────────────────────────
+
+function updateStatusBadge(data) {
+    if (!data) return;
+    const badge = el('statusBadge');
+    const dot   = el('liveDot');
+    if (data.paused) {
+        badge.textContent = 'PAUSED';
+        badge.className = 'status status-paused';
+        dot.style.background = 'var(--red)';
+    } else if (data.paper_trading) {
+        badge.textContent = 'PAPER';
+        badge.className = 'status status-paper';
+        dot.style.background = 'var(--yellow)';
+    } else {
+        badge.textContent = 'LIVE';
+        badge.className = 'status status-live';
+        dot.style.background = 'var(--green)';
+    }
+}
+
+// ── Section B: KPIs ───────────────────────────────────────────────────────
+
+async function updateOverview() {
+    const [overview, status] = await Promise.all([
+        fetchJSON('/api/overview'),
+        fetchJSON('/api/status')
+    ]);
+
+    updateStatusBadge(status || overview);
+
+    if (!overview) return;
+    cachedData.overview = overview;
+
+    const pnlTotal  = parseFloat(overview.pnl_total  || 0);
+    const pnlLatent = parseFloat(overview.pnl_latent || 0);
+    const roi       = parseFloat(overview.roi_month  || 0);
+    const winRate   = parseFloat(overview.win_rate_30d || 0);
+
+    el('kpiCapital').textContent   = fmtUSDC(overview.capital);
+    el('kpiCapital').className     = 'kpi-value neutral';
+
+    el('kpiPnlTotal').textContent  = fmtUSDC(pnlTotal);
+    el('kpiPnlTotal').className    = 'kpi-value ' + colorClass(pnlTotal);
+
+    el('kpiPnlLatent').textContent = fmtUSDC(pnlLatent);
+    el('kpiPnlLatent').className   = 'kpi-value ' + colorClass(pnlLatent);
+
+    el('kpiOpenPos').textContent   = overview.open_positions ?? '0';
+
+    el('kpiWinRate').textContent   = (winRate * 100).toFixed(1) + '%';
+    el('kpiWinRate').className     = 'kpi-value ' + (winRate >= 0.5 ? 'positive' : 'negative');
+
+    el('kpiRoi').textContent       = fmtPct(roi);
+    el('kpiRoi').className         = 'kpi-value ' + colorClass(roi);
+
+    el('kpiApiCost').textContent   = '$' + parseFloat(overview.api_cost_month || 0).toFixed(3);
+}
+
+// ── Section C: P&L Chart ──────────────────────────────────────────────────
+
+async function updatePnlChart() {
+    const history = await fetchJSON('/api/pnl-history');
+    if (!history || !Array.isArray(history)) return;
+
+    const labels = history.map(h => {
+        try {
+            const d = new Date(h.date);
+            return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+        } catch (_) { return h.date; }
+    });
+    const pnlCumulative = history.map(h => parseFloat(h.pnl_cumulative || 0));
+    const pnlDay        = history.map(h => parseFloat(h.pnl_day || 0));
+
+    const ctx = el('pnlChart').getContext('2d');
+
+    if (pnlChart) {
+        pnlChart.data.labels             = labels;
+        pnlChart.data.datasets[0].data  = pnlCumulative;
+        pnlChart.data.datasets[1].data  = pnlDay;
+        pnlChart.update('active');
+        return;
+    }
+
+    pnlChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'P&L Cumulatif',
+                    data: pnlCumulative,
+                    borderColor: '#00F5A0',
+                    backgroundColor: 'rgba(0,245,160,0.06)',
+                    borderWidth: 2,
+                    pointRadius: 3,
+                    pointBackgroundColor: '#00F5A0',
+                    tension: 0.3,
+                    fill: true,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'P&L Journalier',
+                    data: pnlDay,
+                    borderColor: '#3B82F6',
+                    backgroundColor: 'rgba(59,130,246,0.06)',
+                    borderWidth: 1.5,
+                    pointRadius: 2,
+                    pointBackgroundColor: '#3B82F6',
+                    tension: 0.2,
+                    fill: false,
+                    yAxisID: 'y1'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    labels: {
+                        color: '#9CA3AF',
+                        font: { family: 'monospace', size: 11 },
+                        boxWidth: 12
+                    }
+                },
+                tooltip: {
+                    backgroundColor: '#111827',
+                    borderColor: '#1F2937',
+                    borderWidth: 1,
+                    titleColor: '#E5E7EB',
+                    bodyColor: '#9CA3AF',
+                    padding: 10,
+                    callbacks: {
+                        label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color: '#6B7280', font: { family: 'monospace', size: 10 }, maxTicksLimit: 10 },
+                    grid: { color: 'rgba(31,41,55,0.5)' }
+                },
+                y: {
+                    position: 'left',
+                    ticks: {
+                        color: '#00F5A0',
+                        font: { family: 'monospace', size: 10 },
+                        callback: v => '$' + v.toFixed(0)
+                    },
+                    grid: { color: 'rgba(31,41,55,0.4)' }
+                },
+                y1: {
+                    position: 'right',
+                    ticks: {
+                        color: '#3B82F6',
+                        font: { family: 'monospace', size: 10 },
+                        callback: v => '$' + v.toFixed(0)
+                    },
+                    grid: { drawOnChartArea: false }
+                }
+            }
+        }
+    });
+}
+
+// ── Section D: Open Positions ─────────────────────────────────────────────
+
+async function updatePositions() {
+    const positions = await fetchJSON('/api/positions');
+    const tbody = el('positionsBody');
+    const count = el('openPosCount');
+
+    if (!positions || !Array.isArray(positions) || positions.length === 0) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="10">Aucune position ouverte</td></tr>';
+        count.textContent = '';
+        return;
+    }
+
+    count.textContent = positions.length + ' active' + (positions.length > 1 ? 's' : '');
+
+    tbody.innerHTML = positions.map(p => {
+        const pnl     = parseFloat(p.pnl_latent || 0);
+        const pnlCls  = colorClass(pnl);
+        const dirCls  = p.direction === 'YES' ? 'dir-yes' : 'dir-no';
+        const entry   = parseFloat(p.entry_price   || 0);
+        const current = parseFloat(p.current_price || 0);
+        const question = escHtml(truncate(p.market_question || '—', 40));
+        const edge    = p.edge_at_entry !== null && p.edge_at_entry !== undefined
+            ? (parseFloat(p.edge_at_entry) * 100).toFixed(1) + '%' : '—';
+        const score   = p.haiku_score !== null && p.haiku_score !== undefined
+            ? parseFloat(p.haiku_score).toFixed(2) : '—';
+
+        return `<tr>
+            <td><span class="niche-tag">${escHtml(p.bot_niche || '—')}</span></td>
+            <td title="${escHtml(p.market_question || '')}">${question}</td>
+            <td class="${dirCls}">${escHtml(p.direction || '—')}</td>
+            <td>${entry.toFixed(3)}</td>
+            <td>${current.toFixed(3)}</td>
+            <td>${fmtUSDC(p.size_usdc)}</td>
+            <td class="${pnlCls}">${fmtUSDC(pnl)}</td>
+            <td>${score}</td>
+            <td>${edge}</td>
+            <td>${fmtDate(p.opened_at)}</td>
+        </tr>`;
+    }).join('');
+}
+
+// ── Section E: Positions History ──────────────────────────────────────────
+
+async function updateHistory() {
+    const positions = await fetchJSON('/api/positions/history');
+    const tbody = el('historyBody');
+
+    if (!positions || !Array.isArray(positions) || positions.length === 0) {
+        tbody.innerHTML = '<tr class="empty-row"><td colspan="9">Aucun historique disponible</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = positions.map(p => {
+        const pnl     = parseFloat(p.pnl_realized || 0);
+        const pnlCls  = colorClass(pnl);
+        const dirCls  = p.direction === 'YES' ? 'dir-yes' : 'dir-no';
+        const pnlSign = pnl >= 0 ? '+' : '';
+        const question = escHtml(truncate(p.market_question || '—', 38));
+        const reason  = escHtml(p.exit_reason || '—');
+
+        return `<tr>
+            <td><span class="niche-tag">${escHtml(p.bot_niche || '—')}</span></td>
+            <td title="${escHtml(p.market_question || '')}">${question}</td>
+            <td class="${dirCls}">${escHtml(p.direction || '—')}</td>
+            <td>${parseFloat(p.entry_price || 0).toFixed(3)}</td>
+            <td>${parseFloat(p.exit_price  || 0).toFixed(3)}</td>
+            <td>${fmtUSDC(p.size_usdc)}</td>
+            <td class="${pnlCls}">${pnlSign}${fmtUSDC(pnl)}</td>
+            <td style="color:var(--text-dim)">${reason}</td>
+            <td>${fmtDate(p.closed_at)}</td>
+        </tr>`;
+    }).join('');
+}
+
+// ── Section F: Signal Feed ────────────────────────────────────────────────
+
+async function updateSignals() {
+    const signals = await fetchJSON('/api/signals');
+    const feed = el('signalFeed');
+
+    if (!signals || !Array.isArray(signals) || signals.length === 0) {
+        feed.innerHTML = '<div class="signal-item"><span style="color:var(--text-dim);font-style:italic;">Aucun signal récent</span></div>';
+        return;
+    }
+
+    feed.innerHTML = signals.map(s => {
+        const action = (s.action_taken || '').toLowerCase();
+        let badgeClass = 'badge-filtered';
+        let badgeText  = 'SKIP';
+
+        if (action === 'bet' || action === 'trade')       { badgeClass = 'badge-bet';      badgeText = 'BET'; }
+        else if (action === 'skip')                        { badgeClass = 'badge-skip';     badgeText = 'SKIP'; }
+        else if (action === 'blocked')                     { badgeClass = 'badge-blocked';  badgeText = 'BLOCK'; }
+        else if (action === 'filtered')                    { badgeClass = 'badge-filtered'; badgeText = 'FILT.'; }
+
+        const score     = s.haiku_score !== null && s.haiku_score !== undefined
+            ? parseFloat(s.haiku_score).toFixed(1) : '—';
+        const conf      = s.sonnet_confidence !== null && s.sonnet_confidence !== undefined
+            ? (parseFloat(s.sonnet_confidence) * 100).toFixed(0) + '%' : '';
+        const direction = s.haiku_direction || s.sonnet_direction || '';
+        const dirClass  = direction === 'YES' ? 'dir-yes' : direction === 'NO' ? 'dir-no' : '';
+        const title     = truncate(s.news_title || s.market_question || '—', 55);
+        const skipReason = s.skip_reason ? ` · ${s.skip_reason}` : '';
+        const sonnetInfo = s.sonnet_called ? ` · Sonnet conf:${conf}` : '';
+
+        return `<div class="signal-item">
+            <span class="badge ${badgeClass}">${badgeText}</span>
+            <span class="niche-tag">${escHtml(s.bot_niche || '—')}</span>
+            <div class="signal-meta">
+                <span class="signal-title" title="${escHtml(s.news_title || '')}">${escHtml(title)}</span>
+                <span class="signal-info">
+                    Score: <strong>${score}</strong>
+                    ${direction ? `· Dir: <span class="${dirClass}">${direction}</span>` : ''}
+                    ${sonnetInfo}${skipReason}
+                </span>
+            </div>
+            <span class="signal-time">${fmtTimeAgo(s.timestamp)}</span>
+        </div>`;
+    }).join('');
+}
+
+// ── Section G: Niche Stats ────────────────────────────────────────────────
+
+async function updateNicheStats() {
+    const stats = await fetchJSON('/api/stats/niches');
+    const grid  = el('nicheGrid');
+
+    if (!stats || typeof stats !== 'object' || Object.keys(stats).length === 0) {
+        grid.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;font-style:italic;">Aucune statistique par niche disponible</div>';
+        return;
+    }
+
+    const nicheColors = {
+        nba: '#3B82F6', f1: '#EF4444', crypto: '#F59E0B',
+        geopolitics: '#8B5CF6', politics: '#EC4899'
+    };
+
+    grid.innerHTML = Object.entries(stats).map(([niche, kpis]) => {
+        if (!kpis || typeof kpis !== 'object') return '';
+        const color    = nicheColors[niche] || 'var(--accent)';
+        const winRate  = kpis.win_rate  !== undefined ? (parseFloat(kpis.win_rate) * 100).toFixed(1) + '%' : '—';
+        const pnl      = kpis.pnl_total !== undefined ? fmtUSDC(kpis.pnl_total)   : '—';
+        const trades   = kpis.total_trades !== undefined ? kpis.total_trades       : '—';
+        const avgEdge  = kpis.avg_edge !== undefined ? (parseFloat(kpis.avg_edge) * 100).toFixed(1) + '%' : '—';
+        const pnlVal   = parseFloat(kpis.pnl_total || 0);
+        const pnlCls   = colorClass(pnlVal);
+
+        return `<div class="niche-card">
+            <div class="niche-header">
+                <span class="niche-name" style="color:${color}">${niche.toUpperCase()}</span>
+                <span class="${pnlCls}" style="font-size:0.85rem;font-weight:700;">${pnl}</span>
+            </div>
+            <div class="niche-stats-grid">
+                <div class="niche-stat">
+                    <span class="niche-stat-label">Win Rate</span>
+                    <span class="niche-stat-value" style="color:${color}">${winRate}</span>
+                </div>
+                <div class="niche-stat">
+                    <span class="niche-stat-label">Trades</span>
+                    <span class="niche-stat-value neutral">${trades}</span>
+                </div>
+                <div class="niche-stat">
+                    <span class="niche-stat-label">Avg Edge</span>
+                    <span class="niche-stat-value" style="color:${color}">${avgEdge}</span>
+                </div>
+                <div class="niche-stat">
+                    <span class="niche-stat-label">P&L Total</span>
+                    <span class="niche-stat-value ${pnlCls}">${pnl}</span>
+                </div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// ── Section H: Circuit Breakers ───────────────────────────────────────────
+
+async function updateCircuitBreakers() {
+    const [cb, apiCosts] = await Promise.all([
+        fetchJSON('/api/circuit-breakers'),
+        fetchJSON('/api/api-costs')
+    ]);
+
+    // Circuit breakers
+    const container = el('circuitBreakers');
+    if (!cb || typeof cb !== 'object') {
+        container.innerHTML = '<div style="color:var(--text-dim);font-size:0.78rem;font-style:italic;">Données indisponibles</div>';
+    } else {
+        const items = [
+            { key: 'daily_loss',       label: 'Perte Journalière', unit: '%', suffix: '% / 10%' },
+            { key: 'weekly_drawdown',  label: 'Drawdown Semaine',  unit: '%', suffix: '% / 25%' },
+            { key: 'open_positions',   label: 'Positions Ouvertes', unit: '', suffix: ' / 5' },
+            { key: 'api_cost',         label: 'Coût API (EUR)',     unit: '€', suffix: '€ / 15€' }
+        ];
+
+        container.innerHTML = items.map(item => {
+            const data = cb[item.key];
+            if (!data) return '';
+            const current = parseFloat(data.current || 0);
+            const limit   = parseFloat(data.limit   || 1);
+            const pct     = Math.min((current / limit) * 100, 100);
+            const ok      = data.ok !== false;
+            const fillCls = pct < 60 ? 'cb-safe' : pct < 85 ? 'cb-warn' : 'cb-danger';
+
+            return `<div class="cb-item">
+                <div class="cb-header">
+                    <span class="cb-name">${item.label}</span>
+                    <div style="display:flex;align-items:center;gap:0.5rem;">
+                        <span class="cb-values">${current}${item.suffix}</span>
+                        <span class="cb-ok-badge ${ok ? 'cb-ok-true' : 'cb-ok-false'}">${ok ? 'OK' : 'WARN'}</span>
+                    </div>
+                </div>
+                <div class="cb-bar">
+                    <div class="cb-fill ${fillCls}" style="width:${pct}%"></div>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    // API Costs widget
+    const widget = el('apiCostWidget');
+    if (!apiCosts || typeof apiCosts !== 'object') {
+        widget.textContent = 'Données indisponibles';
+    } else {
+        const usagePct = parseFloat(apiCosts.usage_pct || 0);
+        const fillCls  = usagePct < 60 ? 'cb-safe' : usagePct < 85 ? 'cb-warn' : 'cb-danger';
+        widget.innerHTML = `
+            <div style="display:flex;justify-content:space-between;margin-bottom:0.5rem;">
+                <span>USD: <strong>$${parseFloat(apiCosts.monthly_cost_usd || 0).toFixed(3)}</strong></span>
+                <span>EUR: <strong style="color:var(--yellow)">€${parseFloat(apiCosts.monthly_cost_eur || 0).toFixed(3)}</strong></span>
+                <span>Budget: <strong>€${apiCosts.budget_eur || 15}</strong></span>
+            </div>
+            <div class="cb-bar">
+                <div class="cb-fill ${fillCls}" style="width:${usagePct}%"></div>
+            </div>
+            <div style="margin-top:0.3rem;font-size:0.68rem;color:var(--text-dim);">${usagePct}% du budget mensuel utilisé</div>`;
+    }
+}
+
+// ── Section I: Improvements ───────────────────────────────────────────────
+
+async function updateImprovements() {
+    const data = await fetchJSON('/api/improvements');
+    const list = el('improvementsList');
+
+    if (!data || typeof data !== 'object') {
+        list.innerHTML = '<span class="improvement-empty">Aucune suggestion disponible</span>';
+        return;
+    }
+
+    const entries = Object.entries(data);
+    if (entries.length === 0) {
+        list.innerHTML = '<span class="improvement-empty">Aucune suggestion disponible</span>';
+        return;
+    }
+
+    let html = '';
+    let hasAny = false;
+    entries.forEach(([niche, suggestions]) => {
+        if (!Array.isArray(suggestions) || suggestions.length === 0) return;
+        hasAny = true;
+        html += `<div class="improvement-niche">${escHtml(niche)}</div>`;
+        suggestions.forEach(s => {
+            html += `<div class="improvement-item">${escHtml(String(s))}</div>`;
+        });
+    });
+
+    if (!hasAny) {
+        list.innerHTML = '<span class="improvement-empty">Tous les bots fonctionnent de manière optimale</span>';
+    } else {
+        list.innerHTML = html;
+    }
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────
+
+async function pauseAll() {
+    try {
+        const res = await fetch('/api/pause', { method: 'POST' });
+        const data = await res.json();
+        showToast('Bots mis en pause');
+        await updateOverview();
+    } catch (e) {
+        showToast('Erreur: ' + e.message);
+    }
+}
+
+async function resumeAll() {
+    try {
+        const res = await fetch('/api/resume', { method: 'POST' });
+        const data = await res.json();
+        showToast('Bots repris');
+        await updateOverview();
+    } catch (e) {
+        showToast('Erreur: ' + e.message);
+    }
+}
+
+async function forceRefresh() {
+    showToast('Rafraîchissement...');
+    await refresh();
+}
+
+function exportData() {
+    try {
+        const blob = new Blob([JSON.stringify(cachedData, null, 2)], { type: 'application/json' });
+        const url  = URL.createObjectURL(blob);
+        const a    = document.createElement('a');
+        a.href     = url;
+        a.download = `polymarket-dashboard-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast('Export téléchargé');
+    } catch (e) {
+        showToast('Erreur export: ' + e.message);
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+function truncate(str, maxLen) {
+    if (!str) return '—';
+    return str.length > maxLen ? str.slice(0, maxLen) + '…' : str;
+}
+
+function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+// ── Main Refresh ──────────────────────────────────────────────────────────
+
+async function refresh() {
+    startProgressBar();
+    try {
+        await Promise.all([
+            updateOverview(),
+            updatePositions(),
+            updateHistory(),
+            updateSignals(),
+            updateNicheStats(),
+            updatePnlChart(),
+            updateCircuitBreakers(),
+            updateImprovements()
+        ]);
+    } catch (e) {
+        console.error('[refresh] Unexpected error:', e);
+    }
+
+    finishProgressBar();
+    const now = new Date().toLocaleString('fr-FR');
+    el('lastRefreshed').textContent = `Dernière mise à jour : ${now}`;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+
+setInterval(updateClock, 1000);
+setInterval(refresh, 30000);
+updateClock();
+refresh();
+</script>
+
+</body>
+</html>
