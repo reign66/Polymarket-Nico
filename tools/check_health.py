@@ -3,7 +3,6 @@ import sys
 import requests
 import logging
 
-# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
@@ -15,122 +14,187 @@ def check_health():
     total = 0
     passed = 0
 
-    # 1. Check .env exists or env vars are set
+    # ------------------------------------------------------------------
+    # 1. Environment: ANTHROPIC_API_KEY
+    # ------------------------------------------------------------------
     total += 1
-    if os.environ.get('ANTHROPIC_API_KEY') or os.path.exists(
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
-    ):
-        results['env_config'] = 'PASS'
+    check_name = "ENV: ANTHROPIC_API_KEY"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        results[check_name] = ("OK", "Key present")
         passed += 1
     else:
-        results['env_config'] = 'WARN - No .env file and no ANTHROPIC_API_KEY env var'
+        results[check_name] = ("FAIL", "ANTHROPIC_API_KEY not set")
 
-    # 2. Check config.yaml
+    # ------------------------------------------------------------------
+    # 2. config.yaml valid
+    # ------------------------------------------------------------------
     total += 1
-    config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.yaml')
-    if os.path.exists(config_path):
+    check_name = "CONFIG: config.yaml"
+    try:
         import yaml
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
-        if config and 'bots' in config:
-            results['config_yaml'] = 'PASS'
-            passed += 1
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config.yaml",
+        )
+        with open(config_path, "r") as f:
+            cfg = yaml.safe_load(f)
+        required_keys = ["filters", "kelly", "risk", "niches"]
+        missing = [k for k in required_keys if k not in cfg]
+        if missing:
+            results[check_name] = ("FAIL", f"Missing keys: {missing}")
         else:
-            results['config_yaml'] = 'FAIL - Invalid config'
-    else:
-        results['config_yaml'] = 'FAIL - Missing config.yaml'
+            results[check_name] = ("OK", f"{len(cfg)} top-level keys loaded")
+            passed += 1
+    except FileNotFoundError:
+        results[check_name] = ("FAIL", "config.yaml not found")
+    except Exception as exc:
+        results[check_name] = ("FAIL", str(exc))
 
-    # 3. Check SQLite / database module
+    # ------------------------------------------------------------------
+    # 3. Database init
+    # ------------------------------------------------------------------
     total += 1
+    check_name = "DB: SQLite init"
     try:
         from core.database import init_db
-        engine, Session = init_db()
-        session = Session()
+        engine, SessionLocal = init_db()
+        session = SessionLocal()
+        # Simple ping: run a trivial query
+        from sqlalchemy import text
+        session.execute(text("SELECT 1"))
         session.close()
-        results['database'] = 'PASS'
+        results[check_name] = ("OK", "Database reachable and tables created")
         passed += 1
-    except Exception as e:
-        results['database'] = f'FAIL - {e}'
+    except Exception as exc:
+        results[check_name] = ("FAIL", str(exc))
 
-    # 4. Check Gamma API (Polymarket)
+    # ------------------------------------------------------------------
+    # 4. Gamma API (Polymarket)
+    # ------------------------------------------------------------------
     total += 1
+    check_name = "API: Gamma (Polymarket)"
     try:
-        resp = requests.get(
-            'https://gamma-api.polymarket.com/markets?limit=1&active=true',
-            timeout=10,
-            headers={'User-Agent': 'PolymarketBot/1.0'}
-        )
+        url = "https://gamma-api.polymarket.com/markets?limit=1&active=true"
+        resp = requests.get(url, timeout=8)
         if resp.status_code == 200:
-            results['gamma_api'] = 'PASS'
+            data = resp.json()
+            count = len(data) if isinstance(data, list) else "?"
+            results[check_name] = ("OK", f"HTTP 200 — {count} market(s) returned")
             passed += 1
         else:
-            results['gamma_api'] = f'WARN - Status {resp.status_code}'
-    except Exception as e:
-        results['gamma_api'] = f'FAIL - {e}'
+            results[check_name] = ("FAIL", f"HTTP {resp.status_code}")
+    except requests.exceptions.Timeout:
+        results[check_name] = ("FAIL", "Timeout after 8s")
+    except Exception as exc:
+        results[check_name] = ("FAIL", str(exc))
 
-    # 5. Check WorldMonitor
+    # ------------------------------------------------------------------
+    # 5. CoinGecko API
+    # ------------------------------------------------------------------
     total += 1
+    check_name = "API: CoinGecko"
     try:
-        resp = requests.get(
-            'https://worldmonitor.app/api/news-digest',
-            timeout=10,
-            headers={'User-Agent': 'PolymarketBot/1.0'}
-        )
+        url = "https://api.coingecko.com/api/v3/ping"
+        resp = requests.get(url, timeout=8)
         if resp.status_code == 200:
-            results['worldmonitor'] = 'PASS'
+            gecko_status = resp.json().get("gecko_says", "pong")
+            results[check_name] = ("OK", f"HTTP 200 — {gecko_status}")
             passed += 1
         else:
-            results['worldmonitor'] = f'WARN - Status {resp.status_code} (will use fallback)'
-            passed += 1  # Not critical
-    except Exception as e:
-        results['worldmonitor'] = f'WARN - {e} (will use fallback)'
-        passed += 1  # Not critical, we have fallback
+            results[check_name] = ("FAIL", f"HTTP {resp.status_code}")
+    except requests.exceptions.Timeout:
+        results[check_name] = ("FAIL", "Timeout after 8s")
+    except Exception as exc:
+        results[check_name] = ("FAIL", str(exc))
 
-    # 6. Check Telegram
+    # ------------------------------------------------------------------
+    # 6. ESPN API (NBA scoreboard)
+    # ------------------------------------------------------------------
     total += 1
-    token = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-    if token and token != 'your-bot-token':
+    check_name = "API: ESPN (NBA)"
+    try:
+        url = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+        resp = requests.get(url, timeout=8)
+        if resp.status_code == 200:
+            data = resp.json()
+            events = data.get("events", [])
+            results[check_name] = ("OK", f"HTTP 200 — {len(events)} event(s)")
+            passed += 1
+        else:
+            results[check_name] = ("FAIL", f"HTTP {resp.status_code}")
+    except requests.exceptions.Timeout:
+        results[check_name] = ("FAIL", "Timeout after 8s")
+    except Exception as exc:
+        results[check_name] = ("FAIL", str(exc))
+
+    # ------------------------------------------------------------------
+    # 7. Telegram bot (getMe)
+    # ------------------------------------------------------------------
+    total += 1
+    check_name = "BOT: Telegram getMe"
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        results[check_name] = ("SKIP", "TELEGRAM_BOT_TOKEN not configured")
+        # Count as passed so it does not penalise setups without Telegram
+        passed += 1
+    else:
         try:
-            resp = requests.get(f'https://api.telegram.org/bot{token}/getMe', timeout=10)
+            url = f"https://api.telegram.org/bot{token}/getMe"
+            resp = requests.get(url, timeout=8)
             if resp.status_code == 200:
-                results['telegram'] = 'PASS'
+                bot_data = resp.json().get("result", {})
+                bot_name = bot_data.get("username", "unknown")
+                results[check_name] = ("OK", f"@{bot_name} reachable")
                 passed += 1
             else:
-                results['telegram'] = f'WARN - Status {resp.status_code}'
-        except Exception as e:
-            results['telegram'] = f'WARN - {e}'
-    else:
-        results['telegram'] = 'WARN - No token configured'
+                results[check_name] = ("FAIL", f"HTTP {resp.status_code}: {resp.text[:100]}")
+        except requests.exceptions.Timeout:
+            results[check_name] = ("FAIL", "Timeout after 8s")
+        except Exception as exc:
+            results[check_name] = ("FAIL", str(exc))
 
-    # 7. Check imports
+    # ------------------------------------------------------------------
+    # 8. Python imports
+    # ------------------------------------------------------------------
     total += 1
-    try:
-        import anthropic
-        import aiohttp
-        import flask
-        import apscheduler
-        import sqlalchemy
-        results['imports'] = 'PASS'
+    check_name = "IMPORTS: Python packages"
+    required_imports = ["anthropic", "flask", "sqlalchemy", "numpy", "scipy"]
+    failed_imports = []
+    for pkg in required_imports:
+        try:
+            __import__(pkg)
+        except ImportError:
+            failed_imports.append(pkg)
+    if not failed_imports:
+        results[check_name] = ("OK", f"All {len(required_imports)} packages importable")
         passed += 1
-    except ImportError as e:
-        results['imports'] = f'FAIL - Missing: {e}'
+    else:
+        results[check_name] = ("FAIL", f"Missing: {', '.join(failed_imports)}")
 
-    # Print results
-    print("\n" + "=" * 50)
-    print("POLYMARKET BOT — HEALTH CHECK")
-    print("=" * 50)
-    for check, result in results.items():
-        status = 'v' if 'PASS' in result else ('!' if 'WARN' in result else 'x')
-        print(f"  [{status}] {check}: {result}")
-    print("=" * 50)
-    print(f"  {passed}/{total} checks passed")
-    print("=" * 50 + "\n")
+    # ------------------------------------------------------------------
+    # Pretty print results table
+    # ------------------------------------------------------------------
+    col_w = 35
+    print()
+    print("=" * 60)
+    print(f"  POLYMARKET BOT — HEALTH CHECK")
+    print("=" * 60)
+    for name, (status, detail) in results.items():
+        icon = "✓" if status == "OK" else ("~" if status == "SKIP" else "✗")
+        print(f"  {icon}  {name:<{col_w}}  {status:<5}  {detail}")
+    print("=" * 60)
+    print(f"  RESULT: {passed}/{total} checks passed")
+    print("=" * 60)
+    print()
 
-    return passed >= total - 2  # Allow 2 non-critical failures
+    overall = passed >= 6
+    if overall:
+        logger.info("Health check PASSED (%d/%d)", passed, total)
+    else:
+        logger.warning("Health check FAILED (%d/%d) — at least 6/8 required", passed, total)
+    return overall
 
 
-if __name__ == '__main__':
-    from dotenv import load_dotenv
-    load_dotenv()
+if __name__ == "__main__":
     success = check_health()
     sys.exit(0 if success else 1)

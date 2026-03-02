@@ -1,49 +1,54 @@
-bots:
-  - nba
-  - f1
-  - crypto
-  - geopolitics
-  - politics
+cycle_interval_minutes: 30
 
-claude_models:
-  classifier: claude-haiku-4-5-20251001
-  decider: claude-sonnet-4-5-20250929
+api_limits:
+  max_haiku_calls_per_day: 20
+  max_sonnet_calls_per_day: 5
+  max_monthly_cost_eur: 5
 
-kelly_fraction: 0.25
+filters:
+  min_volume_usd: 10000
+  max_spread: 0.05
+  min_hours_to_resolution: 1
+  max_days_to_resolution: 60
+  min_math_edge: 0.08
+  min_confirmed_edge: 0.12
+  min_final_edge: 0.15
 
-min_edge_threshold:
-  haiku: 0.12
-  sonnet: 0.15
+kelly:
+  fraction: 0.25
+  max_bet_pct: 0.05
 
-min_haiku_score: 0.70
-max_daily_sonnet_calls_per_bot: 5
-min_market_volume: 10000
-max_spread: 0.05
-
-capital_limits:
-  small_cap_threshold: 2000
+risk:
+  daily_loss_limit_pct: 0.10
+  weekly_drawdown_limit_pct: 0.25
+  max_open_positions: 5
   small_cap_daily_pct: 0.30
   standard_daily_pct: 0.40
   exception_bonus_pct: 0.20
   exception_min_edge: 0.25
   exception_min_volume: 50000
+  small_cap_threshold: 2000
 
-circuit_breakers:
-  daily_loss_pct: 0.10
-  weekly_drawdown_pct: 0.25
-  max_open_positions: 5
-  max_monthly_api_cost_eur: 15
-
-exit_rules:
+exit:
   take_profit_pct: 0.20
   stop_loss_pct: 0.15
   near_resolution_hours: 48
 
-paper_trading: true
+niches:
+  nba:
+    keywords: [nba, basketball, lakers, celtics, warriors, bucks, nuggets, playoffs, mvp, finals, eastern, western, conference, cavaliers, knicks, heat, sixers, nets, suns, mavericks, clippers, rockets, spurs, grizzlies, timberwolves, thunder, pelicans, kings, pacers, hawks, bulls, pistons, magic, raptors, hornets, wizards, trail blazers, jazz]
+    cycle_weight: 1.0
+  f1:
+    keywords: [f1, formula 1, formula one, verstappen, hamilton, leclerc, norris, constructors, grand prix, pole position, fastest lap, podium, race winner, red bull, ferrari, mclaren, mercedes, alpine, aston martin, williams, haas]
+    cycle_weight: 1.0
+  crypto:
+    keywords: [bitcoin, btc, ethereum, eth, solana, sol, crypto, cryptocurrency, fed rate, interest rate, etf, sec, stablecoin, defi, halving, blockchain, binance, coinbase, mining, memecoin, dogecoin, xrp, cardano]
+    cycle_weight: 1.0
+  geopolitics:
+    keywords: [war, ceasefire, sanction, sanctions, conflict, military, nato, treaty, invasion, peace, troops, nuclear, missile, diplomacy, alliance, russia, ukraine, china, taiwan, iran, israel, palestine, gaza, north korea]
+    cycle_weight: 0.7
+  politics:
+    keywords: [election, president, vote, congress, senate, governor, poll, democrat, republican, impeach, legislation, primary, campaign, supreme court, executive order, inauguration, speaker, majority, filibuster, ballot]
+    cycle_weight: 0.8
 
-bot_cycles:
-  nba: 15
-  f1: 30
-  crypto: 10
-  geopolitics: 30
-  politics: 20
+paper_trading: true

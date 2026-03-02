@@ -1,14 +1,16 @@
 """
-core/database.py
+core/database.py — V2 Database Layer
+"MATH FIRST, AI LAST" Polymarket Trading Bot
 
-SQLite + SQLAlchemy database layer for Polymarket Bot.
-Database file: data/polymarket_bot.db
+SQLite + SQLAlchemy ORM.
+DB file: data/polymarket_bot.db (auto-created).
 """
 
 import os
+import json
+import hashlib
 import logging
-from datetime import datetime, date, timedelta
-
+from datetime import datetime, timedelta, date
 from sqlalchemy import (
     create_engine,
     Column,
@@ -18,493 +20,625 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Date,
-    ForeignKey,
-    UniqueConstraint,
+    Text,
     func,
+    and_,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Base & path helpers
-# ---------------------------------------------------------------------------
-
 Base = declarative_base()
 
-_DB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-_DB_PATH = os.path.join(_DB_DIR, "polymarket_bot.db")
-
-CAPITAL_INITIAL = float(os.environ.get("CAPITAL_INITIAL", 1000))
-
-
 # ---------------------------------------------------------------------------
-# ORM Models
+# Models
 # ---------------------------------------------------------------------------
+
+
+class MarketCache(Base):
+    __tablename__ = "markets_cache"
+
+    id = Column(Integer, primary_key=True)
+    market_id = Column(String, unique=True, index=True, nullable=False)
+    question = Column(String, nullable=True)
+    slug = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    yes_price = Column(Float, nullable=True)
+    no_price = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    liquidity = Column(Float, nullable=True)
+    end_date = Column(String, nullable=True)
+    last_fetched = Column(DateTime, default=datetime.utcnow)
+    niche = Column(String, nullable=True)
+    math_probability = Column(Float, nullable=True)
+    math_confidence = Column(Float, nullable=True)
+    math_method = Column(String, nullable=True)
+    edge_yes = Column(Float, nullable=True)
+    edge_no = Column(Float, nullable=True)
+    best_direction = Column(String, nullable=True)  # YES / NO / SKIP
+    status = Column(String, default="active")
 
 
 class Signal(Base):
-    """One row per signal evaluated by the pipeline."""
-
     __tablename__ = "signals"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    # Context
-    bot_niche = Column(String, nullable=False)
-    news_title = Column(String, nullable=True)
-    news_summary = Column(String, nullable=True)
-
-    # Haiku (fast filter)
-    haiku_score = Column(Float, nullable=True)
-    haiku_edge_yes = Column(Float, nullable=True)
-    haiku_edge_no = Column(Float, nullable=True)
-    haiku_direction = Column(String, nullable=True)  # YES / NO / SKIP
-
-    # Sonnet (deep analysis)
-    sonnet_called = Column(Boolean, default=False, nullable=False)
-    sonnet_direction = Column(String, nullable=True)   # YES / NO / SKIP
-    sonnet_confidence = Column(String, nullable=True)  # LOW / MEDIUM / HIGH
-    sonnet_edge = Column(Float, nullable=True)
-
-    # Market
-    market_id = Column(String, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    market_id = Column(String, index=True, nullable=False)
     market_question = Column(String, nullable=True)
-
-    # Outcome
-    action_taken = Column(String, nullable=True)   # BET / SKIP / FILTERED / BLOCKED
+    niche = Column(String, nullable=True)
+    math_probability = Column(Float, nullable=True)
+    math_confidence = Column(Float, nullable=True)
+    math_method = Column(String, nullable=True)
+    math_edge = Column(Float, nullable=True)
+    haiku_called = Column(Boolean, default=False)
+    haiku_confirmed = Column(Boolean, nullable=True)
+    haiku_adjusted_edge = Column(Float, nullable=True)
+    sonnet_called = Column(Boolean, default=False)
+    sonnet_go = Column(Boolean, nullable=True)
+    sonnet_direction = Column(String, nullable=True)
+    sonnet_confidence = Column(String, nullable=True)
+    sonnet_edge = Column(Float, nullable=True)
+    direction = Column(String, nullable=True)  # YES / NO
+    was_bet_placed = Column(Boolean, default=False)
     skip_reason = Column(String, nullable=True)
+    funnel_step = Column(String, nullable=True)  # fetched/filtered/classified/math_edge/haiku/sonnet/bet
 
 
 class Position(Base):
-    """One row per betting position (open or closed)."""
-
     __tablename__ = "positions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    opened_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    closed_at = Column(DateTime, nullable=True)
-
-    bot_niche = Column(String, nullable=False)
-    market_id = Column(String, nullable=False)
+    market_id = Column(String, index=True, nullable=False)
     market_question = Column(String, nullable=True)
-
-    direction = Column(String, nullable=False)      # YES / NO
+    direction = Column(String, nullable=False)  # YES / NO
     entry_price = Column(Float, nullable=False)
-    current_price = Column(Float, nullable=False)
+    current_price = Column(Float, nullable=True)
     exit_price = Column(Float, nullable=True)
-
-    size_usdc = Column(Float, nullable=False)
-    pnl_latent = Column(Float, default=0.0, nullable=False)
-    pnl_realized = Column(Float, nullable=True)
-
-    exit_reason = Column(String, nullable=True)     # resolution / take-profit / stop-loss / manual
-    status = Column(String, default="open", nullable=False)  # open / closed
-
-    # Signal metadata kept for analytics
-    haiku_score = Column(Float, nullable=True)
-    sonnet_confidence = Column(String, nullable=True)
-    edge_at_entry = Column(Float, nullable=True)
-
-
-class Trade(Base):
-    """Ledger of individual buy/sell transactions linked to a position."""
-
-    __tablename__ = "trades"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    position_id = Column(Integer, ForeignKey("positions.id", ondelete="SET NULL"), nullable=True)
-    market_id = Column(String, nullable=False)
-    direction = Column(String, nullable=False)       # YES / NO
-    action = Column(String, nullable=False)          # buy / sell
-    price = Column(Float, nullable=False)
     amount_usdc = Column(Float, nullable=False)
-    paper_trading = Column(Boolean, default=True, nullable=False)
-
-
-class PnlHistory(Base):
-    """Daily PnL snapshot (one row per calendar day)."""
-
-    __tablename__ = "pnl_history"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    date = Column(Date, unique=True, nullable=False)
-
-    pnl_day = Column(Float, default=0.0, nullable=False)
-    pnl_cumulative = Column(Float, default=0.0, nullable=False)
-    capital = Column(Float, nullable=False)
-    nb_bets = Column(Integer, default=0, nullable=False)
-    nb_wins = Column(Integer, default=0, nullable=False)
-    nb_losses = Column(Integer, default=0, nullable=False)
+    pnl_unrealized = Column(Float, default=0.0)
+    pnl_realized = Column(Float, nullable=True)
+    entry_time = Column(DateTime, default=datetime.utcnow)
+    exit_time = Column(DateTime, nullable=True)
+    exit_reason = Column(String, nullable=True)  # resolution/take-profit/stop-loss/manual
+    bot_niche = Column(String, nullable=True)
+    math_edge = Column(Float, nullable=True)
+    confidence = Column(String, nullable=True)
+    status = Column(String, default="open")  # open / closed
 
 
 class ApiUsage(Base):
-    """Tracks every Claude API call for cost monitoring."""
-
     __tablename__ = "api_usage"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-
-    model = Column(String, nullable=False)      # haiku / sonnet
-    bot_niche = Column(String, nullable=False)
-    tokens_in = Column(Integer, default=0, nullable=False)
-    tokens_out = Column(Integer, default=0, nullable=False)
-    cost_usd = Column(Float, default=0.0, nullable=False)
-    purpose = Column(String, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    model = Column(String, nullable=False)  # haiku / sonnet
+    tokens_in = Column(Integer, nullable=True)
+    tokens_out = Column(Integer, nullable=True)
+    cost_usd = Column(Float, nullable=True)
+    market_id = Column(String, nullable=True)
+    was_useful = Column(Boolean, default=False)
 
 
 class KpiHistory(Base):
-    """Periodic KPI snapshots per bot niche (or global when bot_niche is NULL)."""
-
     __tablename__ = "kpi_history"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     date = Column(Date, nullable=False)
-    period = Column(String, nullable=False)         # daily / weekly
-    bot_niche = Column(String, nullable=True)       # NULL means global
+    period = Column(String, nullable=False)  # daily / weekly
+    niche = Column(String, nullable=True)  # null = global
+    metrics_json = Column(Text, nullable=True)  # JSON string with all KPI data
 
-    win_rate = Column(Float, nullable=True)
-    pnl = Column(Float, nullable=True)
-    roi = Column(Float, nullable=True)
-    nb_bets = Column(Integer, nullable=True)
-    sharpe_ratio = Column(Float, nullable=True)
-    max_drawdown = Column(Float, nullable=True)
-    avg_edge = Column(Float, nullable=True)
-    best_bet_pnl = Column(Float, nullable=True)
-    worst_bet_pnl = Column(Float, nullable=True)
+
+class NewsHash(Base):
+    __tablename__ = "news_hashes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    hash = Column(String, unique=True, index=True, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
-# Engine & session factory
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _hash_text(text: str) -> str:
+    """Return SHA-256 hex digest of text."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _today_start() -> datetime:
+    """Midnight UTC today."""
+    now = datetime.utcnow()
+    return datetime(now.year, now.month, now.day)
+
+
+def _month_start() -> datetime:
+    """First second of the current UTC month."""
+    now = datetime.utcnow()
+    return datetime(now.year, now.month, 1)
+
+
+# ---------------------------------------------------------------------------
+# 1. init_db
 # ---------------------------------------------------------------------------
 
 
 def init_db():
     """
-    Initialise the SQLite database.
-
-    - Creates the data/ directory if it does not exist.
-    - Creates all tables if they do not exist.
+    Create (or open) the SQLite database and ensure all tables exist.
 
     Returns
     -------
-    engine : sqlalchemy.engine.Engine
-    SessionLocal : sessionmaker
+    (engine, SessionLocal) tuple where SessionLocal is a session factory.
     """
-    os.makedirs(_DB_DIR, exist_ok=True)
-
-    db_url = f"sqlite:///{_DB_PATH}"
-    engine = create_engine(
-        db_url,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-        echo=False,
-    )
-
-    Base.metadata.create_all(bind=engine)
-
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    logger.info("Database initialised at %s", _DB_PATH)
-    return engine, SessionLocal
-
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
-
-def get_monthly_api_cost(session: Session) -> float:
-    """Return total API cost (USD) for the current calendar month."""
     try:
-        today = date.today()
-        start_of_month = today.replace(day=1)
-        result = (
-            session.query(func.sum(ApiUsage.cost_usd))
-            .filter(ApiUsage.timestamp >= datetime.combine(start_of_month, datetime.min.time()))
-            .scalar()
+        # Resolve path relative to project root (two levels up from this file)
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base_dir, "data")
+        os.makedirs(data_dir, exist_ok=True)
+
+        db_path = os.path.join(data_dir, "polymarket_bot.db")
+        db_url = f"sqlite:///{db_path}"
+
+        engine = create_engine(
+            db_url,
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
         )
-        return float(result or 0.0)
+
+        Base.metadata.create_all(engine)
+
+        SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+
+        logger.info("Database initialised at %s", db_path)
+        return engine, SessionLocal
+
     except Exception as exc:
-        logger.error("get_monthly_api_cost failed: %s", exc)
-        return 0.0
+        logger.error("init_db failed: %s", exc)
+        raise
 
 
-def check_daily_sonnet_limit(session: Session, bot_niche: str, max_calls: int = 5) -> bool:
+# ---------------------------------------------------------------------------
+# 2. is_market_in_cache
+# ---------------------------------------------------------------------------
+
+
+def is_market_in_cache(session, market_id: str, max_age_minutes: int = 10) -> bool:
     """
-    Return True if the number of Sonnet calls today for *bot_niche* is strictly
-    below *max_calls* (i.e. another call is allowed).
+    Return True if the market is cached and was fetched within max_age_minutes.
     """
     try:
-        today_start = datetime.combine(date.today(), datetime.min.time())
-        count = (
-            session.query(func.count(ApiUsage.id))
+        cutoff = datetime.utcnow() - timedelta(minutes=max_age_minutes)
+        row = (
+            session.query(MarketCache)
             .filter(
-                ApiUsage.model == "sonnet",
-                ApiUsage.bot_niche == bot_niche,
-                ApiUsage.timestamp >= today_start,
+                MarketCache.market_id == market_id,
+                MarketCache.last_fetched >= cutoff,
             )
-            .scalar()
+            .first()
         )
-        return int(count or 0) < max_calls
+        return row is not None
     except Exception as exc:
-        logger.error("check_daily_sonnet_limit failed: %s", exc)
+        logger.error("is_market_in_cache error: %s", exc)
         return False
 
 
-def get_daily_exposure(session: Session) -> float:
-    """Return the total USDC currently committed to open positions opened today."""
+# ---------------------------------------------------------------------------
+# 3. update_market_cache
+# ---------------------------------------------------------------------------
+
+
+def update_market_cache(session, market_data: dict):
+    """
+    Upsert a market row in markets_cache.
+    market_data must contain at least 'market_id'.
+    """
     try:
-        today_start = datetime.combine(date.today(), datetime.min.time())
-        result = (
-            session.query(func.sum(Position.size_usdc))
+        market_id = market_data.get("market_id")
+        if not market_id:
+            logger.warning("update_market_cache: missing market_id in data")
+            return
+
+        row = session.query(MarketCache).filter(MarketCache.market_id == market_id).first()
+
+        if row is None:
+            row = MarketCache(market_id=market_id)
+            session.add(row)
+
+        # Update all provided fields
+        updatable_fields = [
+            "question", "slug", "description", "yes_price", "no_price",
+            "volume", "liquidity", "end_date", "niche",
+            "math_probability", "math_confidence", "math_method",
+            "edge_yes", "edge_no", "best_direction", "status",
+        ]
+        for field in updatable_fields:
+            if field in market_data:
+                setattr(row, field, market_data[field])
+
+        row.last_fetched = datetime.utcnow()
+        session.commit()
+
+    except Exception as exc:
+        logger.error("update_market_cache error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 4. get_cached_markets
+# ---------------------------------------------------------------------------
+
+
+def get_cached_markets(session, niche: str = None) -> list:
+    """
+    Return all cached markets, optionally filtered by niche.
+    Returns a list of MarketCache ORM objects.
+    """
+    try:
+        query = session.query(MarketCache).filter(MarketCache.status == "active")
+        if niche is not None:
+            query = query.filter(MarketCache.niche == niche)
+        return query.all()
+    except Exception as exc:
+        logger.error("get_cached_markets error: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# 5. cleanup_old_cache
+# ---------------------------------------------------------------------------
+
+
+def cleanup_old_cache(session, hours: int = 24):
+    """
+    Delete markets_cache rows older than `hours` hours.
+    """
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        deleted = (
+            session.query(MarketCache)
+            .filter(MarketCache.last_fetched < cutoff)
+            .delete(synchronize_session=False)
+        )
+        session.commit()
+        logger.info("cleanup_old_cache: removed %d stale rows", deleted)
+    except Exception as exc:
+        logger.error("cleanup_old_cache error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 6. is_news_already_processed
+# ---------------------------------------------------------------------------
+
+
+def is_news_already_processed(session, text: str) -> bool:
+    """
+    Hash `text` and check whether the hash exists in news_hashes.
+    Returns True if already processed.
+    """
+    try:
+        h = _hash_text(text)
+        row = session.query(NewsHash).filter(NewsHash.hash == h).first()
+        return row is not None
+    except Exception as exc:
+        logger.error("is_news_already_processed error: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# 7. mark_news_processed
+# ---------------------------------------------------------------------------
+
+
+def mark_news_processed(session, text: str):
+    """
+    Hash `text` and insert the hash into news_hashes (ignore if duplicate).
+    """
+    try:
+        h = _hash_text(text)
+        existing = session.query(NewsHash).filter(NewsHash.hash == h).first()
+        if existing is None:
+            session.add(NewsHash(hash=h))
+            session.commit()
+    except Exception as exc:
+        logger.error("mark_news_processed error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 8. get_daily_api_calls
+# ---------------------------------------------------------------------------
+
+
+def get_daily_api_calls(session, model: str) -> int:
+    """
+    Return the count of api_usage rows for `model` created today (UTC).
+    """
+    try:
+        today = _today_start()
+        count = (
+            session.query(func.count(ApiUsage.id))
             .filter(
-                Position.status == "open",
-                Position.opened_at >= today_start,
+                ApiUsage.model == model,
+                ApiUsage.timestamp >= today,
             )
             .scalar()
         )
-        return float(result or 0.0)
+        return count or 0
     except Exception as exc:
-        logger.error("get_daily_exposure failed: %s", exc)
-        return 0.0
+        logger.error("get_daily_api_calls error: %s", exc)
+        return 0
 
 
-def get_weekly_drawdown_pct(session: Session, current_capital: float) -> float:
+# ---------------------------------------------------------------------------
+# 9. get_monthly_api_cost
+# ---------------------------------------------------------------------------
+
+
+def get_monthly_api_cost(session) -> float:
     """
-    Return the maximum drawdown percentage over the last 7 days.
-
-    Compares *current_capital* against the highest daily capital recorded in the
-    past week.  Returns 0.0 if there is no history yet.
+    Return the sum of cost_usd in api_usage for the current UTC month.
     """
     try:
-        week_ago = date.today() - timedelta(days=7)
-        peak = (
-            session.query(func.max(PnlHistory.capital))
-            .filter(PnlHistory.date >= week_ago)
+        month_start = _month_start()
+        total = (
+            session.query(func.sum(ApiUsage.cost_usd))
+            .filter(ApiUsage.timestamp >= month_start)
             .scalar()
         )
-        if not peak or peak <= 0:
-            return 0.0
-        drawdown = (peak - current_capital) / peak * 100.0
-        return max(drawdown, 0.0)
+        return float(total or 0.0)
     except Exception as exc:
-        logger.error("get_weekly_drawdown_pct failed: %s", exc)
+        logger.error("get_monthly_api_cost error: %s", exc)
         return 0.0
 
 
-def get_open_positions(session: Session) -> list:
+# ---------------------------------------------------------------------------
+# 10. get_daily_exposure
+# ---------------------------------------------------------------------------
+
+
+def get_daily_exposure(session) -> float:
+    """
+    Return the sum of amount_usdc for open positions opened today (UTC).
+    """
+    try:
+        today = _today_start()
+        total = (
+            session.query(func.sum(Position.amount_usdc))
+            .filter(
+                Position.status == "open",
+                Position.entry_time >= today,
+            )
+            .scalar()
+        )
+        return float(total or 0.0)
+    except Exception as exc:
+        logger.error("get_daily_exposure error: %s", exc)
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# 11. get_weekly_drawdown_pct
+# ---------------------------------------------------------------------------
+
+
+def get_weekly_drawdown_pct(session, current_capital: float) -> float:
+    """
+    Compute the maximum drawdown percentage over the last 7 days.
+
+    Drawdown is measured as the peak-to-trough decline in capital.
+    Returns a positive percentage (e.g. 5.0 means 5 % drawdown).
+    Returns 0.0 on any error or when there is no data.
+    """
+    try:
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+
+        # Collect daily realized PnL for positions closed in the last 7 days
+        rows = (
+            session.query(
+                func.date(Position.exit_time).label("exit_date"),
+                func.sum(Position.pnl_realized).label("daily_pnl"),
+            )
+            .filter(
+                Position.status == "closed",
+                Position.exit_time >= seven_days_ago,
+                Position.pnl_realized.isnot(None),
+            )
+            .group_by(func.date(Position.exit_time))
+            .order_by(func.date(Position.exit_time))
+            .all()
+        )
+
+        if not rows:
+            return 0.0
+
+        # Reconstruct capital curve (backwards from current_capital)
+        total_pnl_in_window = sum(r.daily_pnl for r in rows)
+        starting_capital = current_capital - total_pnl_in_window
+
+        capital = starting_capital
+        peak = starting_capital
+        max_drawdown_pct = 0.0
+
+        for row in rows:
+            capital += row.daily_pnl
+            if capital > peak:
+                peak = capital
+            if peak > 0:
+                drawdown = (peak - capital) / peak * 100.0
+                if drawdown > max_drawdown_pct:
+                    max_drawdown_pct = drawdown
+
+        return round(max_drawdown_pct, 4)
+
+    except Exception as exc:
+        logger.error("get_weekly_drawdown_pct error: %s", exc)
+        return 0.0
+
+
+# ---------------------------------------------------------------------------
+# 12. get_open_positions
+# ---------------------------------------------------------------------------
+
+
+def get_open_positions(session) -> list:
     """Return all positions with status='open'."""
     try:
         return session.query(Position).filter(Position.status == "open").all()
     except Exception as exc:
-        logger.error("get_open_positions failed: %s", exc)
+        logger.error("get_open_positions error: %s", exc)
         return []
 
 
-def get_positions_by_market(session: Session, market_id: str) -> list:
-    """Return all positions (any status) for a given market ID."""
-    try:
-        return session.query(Position).filter(Position.market_id == market_id).all()
-    except Exception as exc:
-        logger.error("get_positions_by_market failed: %s", exc)
-        return []
+# ---------------------------------------------------------------------------
+# 13. get_positions_by_market
+# ---------------------------------------------------------------------------
 
 
-def get_daily_pnl(session: Session) -> float:
-    """Return the sum of realized PnL for positions closed today."""
+def get_positions_by_market(session, market_id: str) -> list:
+    """Return open positions for a specific market_id."""
     try:
-        today_start = datetime.combine(date.today(), datetime.min.time())
-        result = (
-            session.query(func.sum(Position.pnl_realized))
+        return (
+            session.query(Position)
             .filter(
-                Position.status == "closed",
-                Position.closed_at >= today_start,
-                Position.pnl_realized.isnot(None),
+                Position.market_id == market_id,
+                Position.status == "open",
             )
-            .scalar()
+            .all()
         )
-        return float(result or 0.0)
     except Exception as exc:
-        logger.error("get_daily_pnl failed: %s", exc)
-        return 0.0
+        logger.error("get_positions_by_market error: %s", exc)
+        return []
 
 
-def get_bot_kpis(session: Session, bot_niche: str) -> dict:
-    """
-    Return the most recent KPI row for *bot_niche*.
+# ---------------------------------------------------------------------------
+# 14. get_closed_positions
+# ---------------------------------------------------------------------------
 
-    Falls back to an empty dict if no data is available.
-    """
+
+def get_closed_positions(session, limit: int = 20) -> list:
+    """Return the last `limit` closed positions ordered by exit_time descending."""
     try:
-        row = (
-            session.query(KpiHistory)
-            .filter(KpiHistory.bot_niche == bot_niche)
-            .order_by(KpiHistory.date.desc(), KpiHistory.id.desc())
-            .first()
+        return (
+            session.query(Position)
+            .filter(Position.status == "closed")
+            .order_by(Position.exit_time.desc())
+            .limit(limit)
+            .all()
         )
-        if row is None:
-            return {}
-        return {
-            "date": row.date.isoformat() if row.date else None,
-            "period": row.period,
-            "bot_niche": row.bot_niche,
-            "win_rate": row.win_rate,
-            "pnl": row.pnl,
-            "roi": row.roi,
-            "nb_bets": row.nb_bets,
-            "sharpe_ratio": row.sharpe_ratio,
-            "max_drawdown": row.max_drawdown,
-            "avg_edge": row.avg_edge,
-            "best_bet_pnl": row.best_bet_pnl,
-            "worst_bet_pnl": row.worst_bet_pnl,
-        }
     except Exception as exc:
-        logger.error("get_bot_kpis failed: %s", exc)
-        return {}
+        logger.error("get_closed_positions error: %s", exc)
+        return []
 
 
-def record_api_call(
-    session: Session,
-    model: str,
-    bot_niche: str,
-    tokens_in: int,
-    tokens_out: int,
-    cost_usd: float,
-    purpose: str = None,
-) -> None:
-    """Insert one row into api_usage and commit."""
-    try:
-        row = ApiUsage(
-            model=model,
-            bot_niche=bot_niche,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
-            cost_usd=cost_usd,
-            purpose=purpose,
-        )
-        session.add(row)
-        session.commit()
-    except Exception as exc:
-        logger.error("record_api_call failed: %s", exc)
-        session.rollback()
+# ---------------------------------------------------------------------------
+# 15. open_position
+# ---------------------------------------------------------------------------
 
 
-def record_signal(session: Session, **kwargs) -> Signal:
+def open_position(session, **kwargs) -> Position:
     """
-    Insert one row into signals and commit.
+    Create and persist a new Position.
 
-    Accepts keyword arguments matching Signal column names.
-    Returns the newly created Signal instance, or None on failure.
+    Required kwargs: market_id, direction, entry_price, amount_usdc.
+    All other Position columns are optional.
+
+    Returns the created Position object, or None on failure.
     """
     try:
-        row = Signal(**kwargs)
-        session.add(row)
+        position = Position(**kwargs)
+        if position.entry_time is None:
+            position.entry_time = datetime.utcnow()
+        if position.status is None:
+            position.status = "open"
+        session.add(position)
         session.commit()
-        session.refresh(row)
-        return row
-    except Exception as exc:
-        logger.error("record_signal failed: %s", exc)
-        session.rollback()
-        return None
-
-
-def open_position(session: Session, **kwargs) -> "Position":
-    """
-    Create and persist a new open position.
-
-    Accepts keyword arguments matching Position column names.
-    Sets status='open' and opened_at=now() if not provided.
-    Returns the Position instance, or None on failure.
-    """
-    try:
-        kwargs.setdefault("status", "open")
-        kwargs.setdefault("opened_at", datetime.utcnow())
-        # current_price defaults to entry_price if not given
-        if "current_price" not in kwargs and "entry_price" in kwargs:
-            kwargs["current_price"] = kwargs["entry_price"]
-        row = Position(**kwargs)
-        session.add(row)
-        session.commit()
-        session.refresh(row)
+        session.refresh(position)
         logger.info(
-            "Position opened: id=%s market=%s direction=%s size=%.2f",
-            row.id,
-            row.market_id,
-            row.direction,
-            row.size_usdc,
+            "open_position: id=%s market=%s dir=%s amount=%.2f",
+            position.id,
+            position.market_id,
+            position.direction,
+            position.amount_usdc,
         )
-        return row
+        return position
     except Exception as exc:
-        logger.error("open_position failed: %s", exc)
+        logger.error("open_position error: %s", exc)
         session.rollback()
         return None
+
+
+# ---------------------------------------------------------------------------
+# 16. close_position
+# ---------------------------------------------------------------------------
 
 
 def close_position(
-    session: Session,
+    session,
     position_id: int,
     exit_price: float,
     exit_reason: str,
-) -> "Position":
+) -> Position:
     """
-    Close an open position and compute realized PnL.
+    Close an open position.
 
-    PnL formula (works for both YES and NO tokens — we track the token price of
-    the direction we bought):
-        pnl = (exit_price - entry_price) * (size_usdc / entry_price)
+    PnL formula:
+        pnl_realized = (exit_price - entry_price) * (amount_usdc / entry_price)
 
-    Returns the updated Position, or None on failure.
+    Returns the updated Position object, or None on failure.
     """
     try:
         position = session.query(Position).filter(Position.id == position_id).first()
         if position is None:
             logger.warning("close_position: position id=%s not found", position_id)
             return None
-        if position.status == "closed":
-            logger.warning("close_position: position id=%s already closed", position_id)
-            return position
 
         if position.entry_price and position.entry_price != 0:
-            pnl = (exit_price - position.entry_price) * (position.size_usdc / position.entry_price)
+            pnl = (exit_price - position.entry_price) * (
+                position.amount_usdc / position.entry_price
+            )
         else:
             pnl = 0.0
 
         position.exit_price = exit_price
         position.exit_reason = exit_reason
-        position.pnl_realized = pnl
-        position.pnl_latent = 0.0
+        position.pnl_realized = round(pnl, 6)
+        position.pnl_unrealized = 0.0
+        position.exit_time = datetime.utcnow()
         position.status = "closed"
-        position.closed_at = datetime.utcnow()
-        position.current_price = exit_price
 
         session.commit()
         session.refresh(position)
         logger.info(
-            "Position closed: id=%s pnl=%.4f exit_reason=%s",
+            "close_position: id=%s pnl=%.4f reason=%s",
             position.id,
             pnl,
             exit_reason,
         )
         return position
     except Exception as exc:
-        logger.error("close_position failed: %s", exc)
+        logger.error("close_position error: %s", exc)
         session.rollback()
         return None
 
 
-def get_capital(session: Session) -> float:
-    """
-    Return current capital = CAPITAL_INITIAL + sum of all realized PnL.
+# ---------------------------------------------------------------------------
+# 17. get_capital
+# ---------------------------------------------------------------------------
 
-    Ignores open/latent PnL — only settled gains/losses count.
+
+def get_capital(session) -> float:
+    """
+    Return current capital:
+        CAPITAL_INITIAL (env var, default 1000) + sum of all pnl_realized.
     """
     try:
-        realized = (
+        initial = float(os.environ.get("CAPITAL_INITIAL", 1000.0))
+        realized_sum = (
             session.query(func.sum(Position.pnl_realized))
             .filter(
                 Position.status == "closed",
@@ -512,29 +646,101 @@ def get_capital(session: Session) -> float:
             )
             .scalar()
         )
-        return CAPITAL_INITIAL + float(realized or 0.0)
+        return round(initial + float(realized_sum or 0.0), 6)
     except Exception as exc:
-        logger.error("get_capital failed: %s", exc)
-        return CAPITAL_INITIAL
+        logger.error("get_capital error: %s", exc)
+        return 0.0
 
 
-def get_closed_positions(session: Session, limit: int = 20) -> list:
-    """Return the last *limit* closed positions ordered by closed_at descending."""
+# ---------------------------------------------------------------------------
+# 18. get_daily_pnl
+# ---------------------------------------------------------------------------
+
+
+def get_daily_pnl(session) -> float:
+    """Return the sum of pnl_realized for positions closed today (UTC)."""
     try:
-        return (
-            session.query(Position)
-            .filter(Position.status == "closed")
-            .order_by(Position.closed_at.desc())
-            .limit(limit)
-            .all()
+        today = _today_start()
+        total = (
+            session.query(func.sum(Position.pnl_realized))
+            .filter(
+                Position.status == "closed",
+                Position.exit_time >= today,
+                Position.pnl_realized.isnot(None),
+            )
+            .scalar()
         )
+        return float(total or 0.0)
     except Exception as exc:
-        logger.error("get_closed_positions failed: %s", exc)
-        return []
+        logger.error("get_daily_pnl error: %s", exc)
+        return 0.0
 
 
-def get_recent_signals(session: Session, limit: int = 30) -> list:
-    """Return the last *limit* signals ordered by timestamp descending."""
+# ---------------------------------------------------------------------------
+# 19. record_api_call
+# ---------------------------------------------------------------------------
+
+
+def record_api_call(
+    session,
+    model: str,
+    tokens_in: int,
+    tokens_out: int,
+    cost_usd: float,
+    market_id: str = None,
+    was_useful: bool = False,
+):
+    """Insert a row into api_usage."""
+    try:
+        row = ApiUsage(
+            model=model,
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost_usd,
+            market_id=market_id,
+            was_useful=was_useful,
+            timestamp=datetime.utcnow(),
+        )
+        session.add(row)
+        session.commit()
+    except Exception as exc:
+        logger.error("record_api_call error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 20. record_signal
+# ---------------------------------------------------------------------------
+
+
+def record_signal(session, **kwargs) -> Signal:
+    """
+    Insert a new Signal row.
+
+    All Signal columns may be passed as kwargs.
+    Returns the created Signal object, or None on failure.
+    """
+    try:
+        signal = Signal(**kwargs)
+        if signal.timestamp is None:
+            signal.timestamp = datetime.utcnow()
+        session.add(signal)
+        session.commit()
+        session.refresh(signal)
+        return signal
+    except Exception as exc:
+        logger.error("record_signal error: %s", exc)
+        session.rollback()
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 21. get_recent_signals
+# ---------------------------------------------------------------------------
+
+
+def get_recent_signals(session, limit: int = 30) -> list:
+    """Return the last `limit` signals ordered by timestamp descending."""
     try:
         return (
             session.query(Signal)
@@ -543,20 +749,153 @@ def get_recent_signals(session: Session, limit: int = 30) -> list:
             .all()
         )
     except Exception as exc:
-        logger.error("get_recent_signals failed: %s", exc)
+        logger.error("get_recent_signals error: %s", exc)
         return []
 
 
-def get_pnl_history(session: Session, days: int = 30) -> list:
-    """Return PnL history rows for the last *days* calendar days, oldest first."""
+# ---------------------------------------------------------------------------
+# 22. get_bot_kpis
+# ---------------------------------------------------------------------------
+
+
+def get_bot_kpis(session, niche: str) -> dict:
+    """
+    Compute KPIs for a given niche.
+
+    Returns a dict with:
+        win_rate    - fraction of profitable closed positions (0.0–1.0)
+        total_bets  - total closed positions in niche
+        pnl         - total realized PnL
+        roi         - pnl / total_invested * 100 (%)
+    """
     try:
-        cutoff = date.today() - timedelta(days=days)
-        return (
-            session.query(PnlHistory)
-            .filter(PnlHistory.date >= cutoff)
-            .order_by(PnlHistory.date.asc())
+        positions = (
+            session.query(Position)
+            .filter(
+                Position.bot_niche == niche,
+                Position.status == "closed",
+                Position.pnl_realized.isnot(None),
+            )
             .all()
         )
+
+        total_bets = len(positions)
+        if total_bets == 0:
+            return {"win_rate": 0.0, "total_bets": 0, "pnl": 0.0, "roi": 0.0}
+
+        wins = sum(1 for p in positions if p.pnl_realized > 0)
+        pnl = sum(p.pnl_realized for p in positions)
+        total_invested = sum(p.amount_usdc for p in positions if p.amount_usdc)
+
+        win_rate = wins / total_bets
+        roi = (pnl / total_invested * 100.0) if total_invested else 0.0
+
+        return {
+            "win_rate": round(win_rate, 4),
+            "total_bets": total_bets,
+            "pnl": round(pnl, 4),
+            "roi": round(roi, 4),
+        }
     except Exception as exc:
-        logger.error("get_pnl_history failed: %s", exc)
+        logger.error("get_bot_kpis error for niche=%s: %s", niche, exc)
+        return {"win_rate": 0.0, "total_bets": 0, "pnl": 0.0, "roi": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# 23. get_funnel_stats
+# ---------------------------------------------------------------------------
+
+_FUNNEL_STEPS = ["fetched", "filtered", "classified", "math_edge", "haiku", "sonnet", "bet"]
+
+
+def get_funnel_stats(session) -> dict:
+    """
+    Return a count of signals per funnel_step for today (UTC).
+
+    Example: {'fetched': 120, 'filtered': 45, ..., 'bet': 3}
+    """
+    try:
+        today = _today_start()
+        rows = (
+            session.query(Signal.funnel_step, func.count(Signal.id))
+            .filter(Signal.timestamp >= today)
+            .group_by(Signal.funnel_step)
+            .all()
+        )
+
+        stats = {step: 0 for step in _FUNNEL_STEPS}
+        for funnel_step, count in rows:
+            if funnel_step in stats:
+                stats[funnel_step] = count
+
+        return stats
+    except Exception as exc:
+        logger.error("get_funnel_stats error: %s", exc)
+        return {step: 0 for step in _FUNNEL_STEPS}
+
+
+# ---------------------------------------------------------------------------
+# 24. get_pnl_history
+# ---------------------------------------------------------------------------
+
+
+def get_pnl_history(session, days: int = 30) -> list:
+    """
+    Return daily PnL history for the last `days` days.
+
+    Each entry is a dict: {'date': 'YYYY-MM-DD', 'pnl': float}
+    Ordered oldest to newest.
+    """
+    try:
+        since = datetime.utcnow() - timedelta(days=days)
+        rows = (
+            session.query(
+                func.date(Position.exit_time).label("exit_date"),
+                func.sum(Position.pnl_realized).label("daily_pnl"),
+            )
+            .filter(
+                Position.status == "closed",
+                Position.exit_time >= since,
+                Position.pnl_realized.isnot(None),
+            )
+            .group_by(func.date(Position.exit_time))
+            .order_by(func.date(Position.exit_time))
+            .all()
+        )
+
+        return [
+            {"date": str(row.exit_date), "pnl": round(float(row.daily_pnl), 4)}
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.error("get_pnl_history error: %s", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# 25. save_kpi
+# ---------------------------------------------------------------------------
+
+
+def save_kpi(session, niche: str, period: str, metrics: dict):
+    """
+    Persist KPI data into kpi_history as a JSON blob.
+
+    Parameters
+    ----------
+    niche   : niche name, or None for global KPIs
+    period  : 'daily' or 'weekly'
+    metrics : arbitrary dict — will be serialised to JSON
+    """
+    try:
+        row = KpiHistory(
+            date=date.today(),
+            period=period,
+            niche=niche,
+            metrics_json=json.dumps(metrics, default=str),
+        )
+        session.add(row)
+        session.commit()
+    except Exception as exc:
+        logger.error("save_kpi error niche=%s period=%s: %s", niche, period, exc)
+        session.rollback()

@@ -1,121 +1,102 @@
-# Polymarket Trading Bot
+# Polymarket Trading Bot V2 — MATH FIRST, AI LAST
 
-Bot de trading automatisé pour [Polymarket](https://polymarket.com) — marchés de prédiction.
+Bot de trading automatise pour [Polymarket](https://polymarket.com) — marches de prediction.
 
-## Architecture
+## Philosophie V2
+
+**95% du travail est fait par des calculs mathematiques (zero cout API).**
+
+```
+Marches actifs (200-500)
+    |  Filtre mecanique: volume, spread, temps       [GRATUIT]
+    v
+Marches filtres (~60-100)
+    |  Classification par niche: regex/keywords       [GRATUIT]
+    v
+Marches classes (~50-80)
+    |  Scoring math: Elo, GBM, momentum              [GRATUIT]
+    |  Edge = notre proba - prix marche
+    v
+Edge > 8% (~2-5/jour)
+    |  Claude Haiku: confirmation edge                [~0.001$/appel]
+    v
+Haiku confirme (~1-3/jour)
+    |  Claude Sonnet: decision finale                 [~0.01$/appel]
+    v
+Sonnet GO (~0-2/jour)
+    |  Risk check + Kelly sizing + execution
+    v
+BET PLACE (paper ou reel)
+```
+
+**Cout API cible: < 2 EUR/mois** (vs 86$/mois V1)
+
+## Modeles Mathematiques
+
+| Niche | Modele | Methode | Confiance |
+|-------|--------|---------|-----------|
+| NBA | Elo Rating | Ratings Elo + home advantage + streaks | 0.60-0.80 |
+| F1 | Championship | Classements + tiers constructeurs | 0.45-0.65 |
+| Crypto | GBM | Mouvement brownien geometrique (scipy) | 0.50-0.70 |
+| Geopolitique | Momentum | Tendance prix + CII scores | 0.15-0.40 |
+| Politique | Momentum | Incumbency + tendance | 0.20-0.45 |
+| Generique | Market Prior | Trust the market | 0.05-0.15 |
+
+## Structure
 
 ```
 polymarket-bot/
-├── core/                    # Modules principaux
-│   ├── database.py          # SQLite + SQLAlchemy (6 tables)
-│   ├── worldmonitor_reader.py # News WorldMonitor + fallbacks
-│   ├── sport_reader.py      # NBA, F1, ESPN
-│   ├── haiku_classifier.py  # Claude Haiku — filtre news
-│   ├── sonnet_decider.py    # Claude Sonnet — décision de pari
-│   ├── polymarket_client.py # Gamma + CLOB API
-│   ├── position_sizer.py    # Kelly Criterion
-│   ├── risk_manager.py      # Circuit breakers + capital rules
-│   └── exit_manager.py      # Take-profit / stop-loss / cash-out
-├── bots/                    # Bots spécialisés par niche
-│   ├── base_bot.py          # Classe abstraite — pipeline complet
-│   ├── bot_nba.py           # NBA (cycle 15min)
-│   ├── bot_f1.py            # F1 (cycle 30min)
-│   ├── bot_crypto.py        # Crypto + macro (cycle 10min)
-│   ├── bot_geopolitics.py   # Géopolitique (cycle 30min, Kelly réduit)
-│   └── bot_politics.py      # Politique US/EU (cycle 20min)
-├── alerts/
-│   ├── telegram_bot.py      # 1 bot Telegram, tags par niche
-│   └── email_notifier.py    # Rapports email HTML
-├── dashboard/
-│   ├── app.py               # Flask API (14 endpoints)
-│   └── templates/index.html # Dashboard responsive dark theme
-├── tools/
-│   ├── kpi_tracker.py       # KPIs + Go/No-Go
-│   ├── backtester.py        # Simulation historique
-│   └── check_health.py      # Vérification santé système
-├── config.yaml              # Configuration complète
-├── main.py                  # Orchestrateur APScheduler
-├── start.sh / stop.sh       # Scripts démarrage/arrêt
-├── Procfile                 # Railway deployment
-└── runtime.txt              # Python 3.11
+├── core/
+│   ├── database.py              # SQLite (6 tables)
+│   ├── market_fetcher.py        # Gamma API + cache
+│   ├── mechanical_filter.py     # Volume/spread/temps
+│   ├── niche_classifier.py      # Regex keywords (zero IA)
+│   ├── math_models/
+│   │   ├── elo_model.py         # NBA Elo
+│   │   ├── f1_model.py          # F1 standings
+│   │   ├── crypto_model.py      # GBM + CoinGecko
+│   │   ├── geo_model.py         # Momentum + CII
+│   │   ├── politics_model.py    # Incumbency + momentum
+│   │   └── generic_model.py     # Fallback
+│   ├── edge_calculator.py       # Edge + Kelly + EV
+│   ├── haiku_confirmer.py       # Claude Haiku (max 20/jour)
+│   ├── sonnet_decider.py        # Claude Sonnet (max 5/jour)
+│   ├── polymarket_client.py     # Gamma + CLOB API
+│   ├── position_sizer.py        # Kelly criterion
+│   ├── risk_manager.py          # 8 checks sequentiels
+│   └── exit_manager.py          # TP/SL/near-resolution
+├── alerts/telegram_bot.py       # 1 bot, tags par niche
+├── dashboard/                   # Flask + responsive HTML
+├── tools/                       # KPIs + health check
+├── config.yaml
+├── main.py                      # Orchestrateur (1 cycle/30min)
+└── data/elo_ratings.json        # Ratings NBA persistes
 ```
-
-## Pipeline de Trading
-
-```
-News → Haiku (filtre, 300 tokens) → Score >= 0.7 & Edge >= 12%
-  → Circuit breakers OK → Sonnet (décision, 500 tokens, max 5/jour/bot)
-  → Edge >= 15% & Confidence HIGH/MEDIUM → Liquidity check
-  → Kelly sizing (fraction 0.25) → Place bet (paper ou réel)
-  → Telegram notification
-```
-
-## Stratégie Claude API (<7€/mois)
-
-| Modèle | Usage | Max tokens | Condition |
-|--------|-------|------------|-----------|
-| Haiku | Classification news | 300 | News pertinente pour Polymarket |
-| Sonnet | Décision finale | 500 | Haiku score >= 0.7 ET edge > 12% |
-
-- Max 5 appels Sonnet/jour/bot
-- JAMAIS Claude pour alertes, dashboard, résumés
 
 ## Installation
 
 ```bash
-# Cloner le repo
-git clone <repo-url>
-cd polymarket-bot
-
-# Environnement virtuel
-python3.11 -m venv venv
-source venv/bin/activate
-
-# Dépendances
+git clone <repo-url> && cd polymarket-bot
+python3.11 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-
-# Configuration
-cp .env.example .env
-# Éditer .env avec vos clés API
-
-# Vérification santé
+cp .env.example .env  # Editer avec vos cles
 python tools/check_health.py
-
-# Démarrage (paper trading par défaut)
-python main.py
+python main.py  # Paper trading par defaut
 ```
 
-## Variables d'Environnement
-
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Clé API Anthropic |
-| `TELEGRAM_BOT_TOKEN` | Token bot Telegram |
-| `TELEGRAM_CHAT_ID` | Chat ID Telegram |
-| `PAPER_TRADING` | `true` (défaut) ou `false` |
-| `CAPITAL_INITIAL` | Capital de départ en € |
-| `MAX_BET_SIZE` | Taille max d'un pari en USDC |
-| `POLYMARKET_*` | Clés Polymarket (pour trading réel) |
-| `EMAIL_*` | Gmail SMTP (pour rapports email) |
-
-## Risk Management
-
-- **Circuit breakers** : perte journalière 10%, drawdown 7j 25%, 5 positions max, API 15€/mois
-- **Exit rules** : take-profit +20%, stop-loss -15%, alerte cash-out à 48h de résolution
-- **Capital limits** : 30% du capital/jour (<2000€), 40% (>=2000€), exception +20% si edge >25%
-- **Dedup** : un seul pari par marché à travers tous les bots
-
-## Dashboard
-
-Accessible sur `http://localhost:5000` (ou URL Railway).
-Dark theme responsive (375px → 1920px), auto-refresh 30s.
-
-## Déploiement Railway
+## Deploiement Railway
 
 ```bash
 railway login
-railway init --name polymarket-bot
-railway variables set ...  # Depuis .env
+railway link  # Lier au projet existant
 railway up --detach
-railway domain  # Obtenir l'URL
+railway domain  # URL du dashboard
 ```
+
+## Risk Management
+
+- Circuit breakers: perte journaliere 10%, drawdown 7j 25%
+- Max 5 positions ouvertes simultanement
+- Kelly fraction 0.25, cap 5% du capital par bet
+- Take-profit +20%, stop-loss -15%
+- API budget: max 5 EUR/mois

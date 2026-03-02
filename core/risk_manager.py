@@ -1,282 +1,101 @@
-"""
-core/risk_manager.py
-
-Portfolio-level risk controls:
-- Circuit breakers (daily loss, weekly drawdown, open position count, API cost)
-- Daily capital exposure limits with dynamic drawdown adjustments
-- Market deduplication guard
-- Liquidity filters
-"""
-
-import logging
 import os
-from datetime import datetime
+import logging
 from typing import Tuple
-
-from core.database import (
-    Session,
-    get_capital,
-    get_daily_exposure,
-    get_daily_pnl,
-    get_monthly_api_cost,
-    get_open_positions,
-    get_weekly_drawdown_pct,
-)
 
 logger = logging.getLogger(__name__)
 
-# USD → EUR conversion used for API cost comparisons
-_USD_TO_EUR = 0.92
-
 
 class RiskManager:
-    """
-    Centralised risk gating for the Polymarket bot.
-
-    All ``check_*`` methods return a ``(ok: bool, reason: str)`` tuple.
-    When ``ok`` is True the reason string is always empty.
-
-    Parameters
-    ----------
-    config : dict
-        Full bot configuration dict.  Expected keys (with nested dicts):
-        - risk_controls.daily_loss_pct
-        - risk_controls.weekly_drawdown_pct
-        - risk_controls.max_open_positions
-        - risk_controls.max_monthly_api_cost_eur
-        - capital_limits.small_cap_threshold
-        - capital_limits.small_cap_daily_pct
-        - capital_limits.standard_daily_pct
-        - capital_limits.exception_min_edge
-        - capital_limits.exception_min_volume
-        - capital_limits.exception_bonus_pct
-        - min_market_volume
-        - max_spread
-    db_session : sqlalchemy.orm.Session
-    """
-
-    def __init__(self, config: dict, db_session: Session) -> None:
+    def __init__(self, config: dict, db_session):
         self.config = config
         self.session = db_session
+        self.risk_config = config.get('risk', {})
+        self.api_limits = config.get('api_limits', {})
 
-    # ------------------------------------------------------------------
-    # Circuit breakers
-    # ------------------------------------------------------------------
+    def check_all(self, proposed_amount: float, market_id: str,
+                  signal_info: dict = None) -> Tuple[bool, float, str]:
+        """Run all risk checks. Returns (approved, adjusted_amount, reason).
+        If approved=False, amount=0.
+        If approved=True but amount adjusted, reason explains why."""
 
-    def check_circuit_breakers(self) -> Tuple[bool, str]:
-        """
-        Run all portfolio-level circuit breakers in sequence.
+        from core.database import (get_daily_pnl, get_weekly_drawdown_pct,
+                                   get_open_positions, get_positions_by_market,
+                                   get_daily_exposure, get_monthly_api_cost, get_capital)
 
-        Returns ``(True, "")`` only when every check passes.
-        Returns ``(False, <reason>)`` on the first failing check.
-        """
-        risk = self.config.get("risk_controls", {})
-
-        capital = get_capital(self.session)
-
-        # 1. Daily loss limit
-        daily_pnl = get_daily_pnl(self.session)
-        daily_loss_pct = float(risk.get("daily_loss_pct", 0.05))
-        daily_loss_limit = capital * daily_loss_pct
-
-        if daily_pnl < 0 and abs(daily_pnl) >= daily_loss_limit:
-            reason = (
-                f"Daily loss limit reached: {daily_pnl:.2f} EUR "
-                f"(limit: -{daily_loss_limit:.2f} EUR)"
-            )
-            logger.warning("Circuit breaker triggered — %s", reason)
-            return (False, reason)
-
-        # 2. Weekly drawdown
-        weekly_dd_pct = get_weekly_drawdown_pct(self.session, capital)
-        max_weekly_dd = float(risk.get("weekly_drawdown_pct", 0.20)) * 100.0  # stored as decimal
-
-        if weekly_dd_pct >= max_weekly_dd:
-            reason = (
-                f"Weekly drawdown limit reached: {weekly_dd_pct:.2f}% "
-                f"(limit: {max_weekly_dd:.2f}%)"
-            )
-            logger.warning("Circuit breaker triggered — %s", reason)
-            return (False, reason)
-
-        # 3. Max open positions
-        open_positions = get_open_positions(self.session)
-        max_open = int(risk.get("max_open_positions", 10))
-
-        if len(open_positions) >= max_open:
-            reason = (
-                f"Max open positions reached: {len(open_positions)} "
-                f"(limit: {max_open})"
-            )
-            logger.warning("Circuit breaker triggered — %s", reason)
-            return (False, reason)
-
-        # 4. Monthly API cost
-        monthly_cost_usd = get_monthly_api_cost(self.session)
-        monthly_cost_eur = monthly_cost_usd * _USD_TO_EUR
-        max_monthly_cost_eur = float(risk.get("max_monthly_api_cost_eur", 50.0))
-
-        if monthly_cost_eur >= max_monthly_cost_eur:
-            reason = (
-                f"Monthly API cost limit reached: {monthly_cost_eur:.2f} EUR "
-                f"(limit: {max_monthly_cost_eur:.2f} EUR)"
-            )
-            logger.warning("Circuit breaker triggered — %s", reason)
-            return (False, reason)
-
-        return (True, "")
-
-    # ------------------------------------------------------------------
-    # Daily capital exposure
-    # ------------------------------------------------------------------
-
-    def check_daily_capital_exposure(
-        self, proposed_amount: float, signal: dict
-    ) -> Tuple[bool, str]:
-        """
-        Verify that adding ``proposed_amount`` would not exceed the daily
-        exposure limit, including any high-conviction exceptions or
-        drawdown-based reductions.
-
-        Parameters
-        ----------
-        proposed_amount : float
-            USDC amount of the bet being considered.
-        signal : dict
-            Signal dict with keys: edge (float), volume (float),
-            confidence (str: LOW/MEDIUM/HIGH).
-
-        Returns
-        -------
-        (bool, str)
-        """
-        limits = self.config.get("capital_limits", {})
-
-        capital = get_capital(self.session)
-        daily_exposure = get_daily_exposure(self.session)
-
-        small_cap_threshold = float(limits.get("small_cap_threshold", 500.0))
-        small_cap_daily_pct = float(limits.get("small_cap_daily_pct", 0.10))
-        standard_daily_pct = float(limits.get("standard_daily_pct", 0.05))
-
-        # Base daily limit
-        if capital < small_cap_threshold:
-            daily_limit = capital * small_cap_daily_pct
-        else:
-            daily_limit = capital * standard_daily_pct
-
-        # High-conviction exception: ALL three conditions must be met
-        edge = float(signal.get("edge", 0.0))
-        volume = float(signal.get("volume", 0.0))
-        confidence = str(signal.get("confidence", "LOW")).upper()
-
-        exception_min_edge = float(limits.get("exception_min_edge", 0.10))
-        exception_min_volume = float(limits.get("exception_min_volume", 10000.0))
-        exception_bonus_pct = float(limits.get("exception_bonus_pct", 0.50))
-
-        if (
-            edge > exception_min_edge
-            and volume > exception_min_volume
-            and confidence == "HIGH"
-        ):
-            daily_limit *= 1.0 + exception_bonus_pct
-            logger.debug(
-                "check_daily_capital_exposure: high-conviction exception applied, "
-                "new daily_limit=%.2f", daily_limit
-            )
-
-        # Drawdown-based reductions
-        weekly_dd = get_weekly_drawdown_pct(self.session, capital)
-        if weekly_dd > 15.0:
-            daily_limit /= 2.0
-            logger.debug(
-                "check_daily_capital_exposure: weekly_dd=%.2f%% > 15%%, daily_limit halved to %.2f",
-                weekly_dd, daily_limit,
-            )
-        elif weekly_dd > 10.0:
-            daily_limit *= 0.75
-            logger.debug(
-                "check_daily_capital_exposure: weekly_dd=%.2f%% > 10%%, daily_limit reduced to %.2f",
-                weekly_dd, daily_limit,
-            )
-
-        projected_exposure = daily_exposure + proposed_amount
-        if projected_exposure > daily_limit:
-            reason = (
-                f"Daily exposure limit: {projected_exposure:.2f} > {daily_limit:.2f} "
-                f"(current exposure: {daily_exposure:.2f}, proposed: {proposed_amount:.2f})"
-            )
-            logger.warning("check_daily_capital_exposure failed — %s", reason)
-            return (False, reason)
-
-        return (True, "")
-
-    # ------------------------------------------------------------------
-    # Market deduplication
-    # ------------------------------------------------------------------
-
-    def check_market_dedup(self, market_id: str) -> Tuple[bool, str]:
-        """
-        Reject a bet if the bot already holds an open position on the same market.
-
-        Returns
-        -------
-        (bool, str)
-        """
         try:
-            from core.database import Position
+            capital = get_capital(self.session)
+            amount = proposed_amount
 
-            existing = (
-                self.session.query(Position)
-                .filter(
-                    Position.market_id == market_id,
-                    Position.status == "open",
-                )
-                .first()
-            )
-            if existing is not None:
-                reason = (
-                    f"Market already has open position (position_id={existing.id}, "
-                    f"market_id={market_id})"
-                )
-                logger.debug("check_market_dedup: %s", reason)
-                return (False, reason)
-            return (True, "")
-        except Exception as exc:
-            logger.error("check_market_dedup failed: %s", exc)
-            # Fail safe: block the bet when the check itself errors
-            return (False, f"Dedup check error: {exc}")
+            # a) Circuit breakers: daily loss
+            daily_pnl = get_daily_pnl(self.session)
+            daily_limit = capital * self.risk_config.get('daily_loss_limit_pct', 0.10)
+            if daily_pnl < 0 and abs(daily_pnl) >= daily_limit:
+                return (False, 0, f"Daily loss limit: {daily_pnl:.2f} >= {daily_limit:.2f}")
 
-    # ------------------------------------------------------------------
-    # Liquidity filter
-    # ------------------------------------------------------------------
+            # b) Weekly drawdown
+            weekly_dd = get_weekly_drawdown_pct(self.session, capital)
+            weekly_limit = self.risk_config.get('weekly_drawdown_limit_pct', 0.25)
+            if weekly_dd >= weekly_limit:
+                return (False, 0, f"Weekly drawdown: {weekly_dd:.1%} >= {weekly_limit:.0%}")
 
-    def check_liquidity(self, volume: float, spread: float) -> Tuple[bool, str]:
-        """
-        Ensure the market meets minimum volume and maximum spread requirements.
+            # c) Max open positions
+            open_pos = get_open_positions(self.session)
+            max_pos = self.risk_config.get('max_open_positions', 5)
+            if len(open_pos) >= max_pos:
+                return (False, 0, f"Max positions: {len(open_pos)} >= {max_pos}")
 
-        Parameters
-        ----------
-        volume : float
-            24-hour or total trading volume in USDC.
-        spread : float
-            Absolute spread: ``|1 - yes_price - no_price|``.
+            # d) Market dedup
+            market_pos = get_positions_by_market(self.session, market_id)
+            if market_pos:
+                return (False, 0, f"Already in position on market {market_id[:8]}")
 
-        Returns
-        -------
-        (bool, str)
-        """
-        min_volume = float(self.config.get("min_market_volume", 1000.0))
-        max_spread = float(self.config.get("max_spread", 0.05))
+            # e) Daily capital exposure
+            daily_exp = get_daily_exposure(self.session)
+            small_cap = self.risk_config.get('small_cap_threshold', 2000)
+            if capital < small_cap:
+                daily_cap_limit = capital * self.risk_config.get('small_cap_daily_pct', 0.30)
+            else:
+                daily_cap_limit = capital * self.risk_config.get('standard_daily_pct', 0.40)
 
-        if volume < min_volume:
-            reason = f"Volume too low: {volume:.2f} (minimum: {min_volume:.2f})"
-            logger.debug("check_liquidity: %s", reason)
-            return (False, reason)
+            # f) Exception: high edge + volume + confidence
+            if signal_info:
+                edge = signal_info.get('edge', 0)
+                volume = signal_info.get('volume', 0)
+                confidence = signal_info.get('confidence', 'LOW')
+                exc_min_edge = self.risk_config.get('exception_min_edge', 0.25)
+                exc_min_vol = self.risk_config.get('exception_min_volume', 50000)
+                if edge > exc_min_edge and volume > exc_min_vol and confidence == 'HIGH':
+                    bonus = self.risk_config.get('exception_bonus_pct', 0.20)
+                    daily_cap_limit *= (1 + bonus)
 
-        if spread > max_spread:
-            reason = f"Spread too wide: {spread:.4f} (maximum: {max_spread:.4f})"
-            logger.debug("check_liquidity: %s", reason)
-            return (False, reason)
+            # g) Drawdown adjustments
+            if weekly_dd > 0.15:
+                daily_cap_limit /= 2
+            elif weekly_dd > 0.10:
+                daily_cap_limit *= 0.75
 
-        return (True, "")
+            if daily_exp + amount > daily_cap_limit:
+                # Reduce amount to fit
+                amount = max(0, daily_cap_limit - daily_exp)
+                if amount < 1.0:
+                    return (False, 0, f"Daily exposure limit reached: {daily_exp:.2f}/{daily_cap_limit:.2f}")
+
+            # h) Monthly API cost
+            api_cost = get_monthly_api_cost(self.session)
+            api_cost_eur = api_cost * 0.92
+            max_api = self.api_limits.get('max_monthly_cost_eur', 5)
+            if api_cost_eur >= max_api:
+                return (False, 0, f"Monthly API cost: {api_cost_eur:.2f}€ >= {max_api}€")
+
+            reason = ""
+            if amount < proposed_amount:
+                reason = f"Amount reduced from {proposed_amount:.2f} to {amount:.2f} (exposure limit)"
+
+            logger.info(f"Risk check PASSED: amount={amount:.2f}, capital={capital:.2f}, "
+                        f"daily_exp={daily_exp:.2f}, open_pos={len(open_pos)}")
+
+            return (True, round(amount, 2), reason)
+
+        except Exception as e:
+            logger.error(f"Risk check error: {e}", exc_info=True)
+            return (False, 0, f"Risk check error: {e}")
