@@ -5,12 +5,12 @@ api_limits:
   max_sonnet_calls_per_day: 5
   max_monthly_cost_eur: 5
 filters:
-  min_volume_usd: 5000
-  max_spread: 0.08
-  min_hours_to_resolution: 0.5
-  max_days_to_resolution: 180
-  min_price: 0.03
-  max_price: 0.97
+  min_volume_usd: 1000
+  max_spread: 0.15
+  min_hours_to_resolution: 0.25
+  max_days_to_resolution: 999
+  min_price: 0.02
+  max_price: 0.98
   price_change_threshold: 0.02
   min_math_edge: 0.03
   min_math_confidence: 0.45

@@ -216,7 +216,7 @@ class MarketFetcher:
         all_markets: List[MarketData] = []
         all_ids = []
         page_size = 100
-        max_offset = 900  # Up to ~1000 markets
+        max_offset = 1400  # Up to ~1500 markets
 
         offset = 0
         while offset <= max_offset:
@@ -270,7 +270,10 @@ class MarketFetcher:
                 logger.debug(f"mark_inactive_markets error: {e}")
 
         self._full_fetch_cache = (now, all_markets)
-        logger.info(f"fetch_active_markets: fetched {len(all_markets)} new/changed markets")
+        logger.info(
+            f"fetch_active_markets: {len(all_ids)} total seen, "
+            f"{len(all_markets)} new/changed (price moved ≥2%)"
+        )
         return all_markets
 
     def get_market_details(self, market_id: str) -> Optional[MarketData]:
