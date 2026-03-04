@@ -235,6 +235,14 @@ class MarketFetcher:
             if not items:
                 break
 
+            # TEMP: log raw fields of first 3 items on first page to inspect Gamma API structure
+            if offset == 0:
+                for sample in items[:3]:
+                    tag_fields = {k: sample.get(k) for k in
+                                  ('tags', 'category', 'groupSlugs', 'slug', 'events',
+                                   'group', 'groupSlug', 'outcomes', 'markets')}
+                    logger.info(f"GAMMA SAMPLE fields: {json.dumps(tag_fields, default=str)[:600]}")
+
             price_change_threshold = 0.02  # 2% minimum change to re-analyze
             for item in items:
                 market = self._parse_market_item(item)
