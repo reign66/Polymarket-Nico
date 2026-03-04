@@ -73,9 +73,10 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
         stats['classified'] = len(classified)
         clf_stats = niche_classifier.get_stats_and_reset()
         logger.info(
-            f"Step 3 - Classified: {len(classified)} markets ({unclassified} unclassified) | "
-            f"Classifier: {clf_stats['gamma']} tags | {clf_stats['cache']} cache | "
-            f"{clf_stats['haiku']} Haiku | {clf_stats['unknown']} unknown"
+            f"Step 3 - Classified: {len(classified)} markets | "
+            f"Classifier: {clf_stats['gamma']} gamma | {clf_stats.get('keyword', 0)} kw | "
+            f"{clf_stats['cache']} cache | {clf_stats['haiku']} haiku | "
+            f"{clf_stats.get('generic', 0)} generic-fallback"
         )
 
         # Step 4-7: Process each classified market through the funnel
