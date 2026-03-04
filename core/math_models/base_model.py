@@ -1,41 +1,35 @@
+"""Base class for all math probability models."""
+
 import logging
-from abc import ABC, abstractmethod
-from typing import Dict, Optional
-from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class ProbabilityResult:
-    probability: float        # 0-1, our estimated probability
-    confidence: float         # 0-1, how confident we are in our estimate
-    method: str              # name of the method used
-    factors: Dict = field(default_factory=dict)  # contributing factors
-    reasoning: str = ""      # human-readable explanation
 
-    def __post_init__(self):
-        self.probability = max(0.01, min(0.99, self.probability))
-        self.confidence = max(0.0, min(1.0, self.confidence))
+class MathModel:
+    def calculate_probability(self, market, external_data=None) -> dict:
+        """
+        Calculate probability for a market.
 
-class MathModel(ABC):
-    """Abstract base for all mathematical probability models.
+        Returns dict with:
+            probability  - float [0,1]
+            confidence   - float [0,1]
+            method       - str describing the model/method used
+            factors      - dict of intermediate values
+            reasoning    - str human-readable explanation
+        """
+        raise NotImplementedError
 
-    The FUNDAMENTAL PRINCIPLE:
-    Polymarket price = crowd's implied probability.
-    Our model calculates an INDEPENDENT probability from data.
-    The DIFFERENCE = potential edge.
-    """
-
-    def __init__(self, config: dict):
-        self.config = config
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-    @abstractmethod
-    def calculate_probability(self, market, external_data: dict = None) -> Optional[ProbabilityResult]:
-        """Calculate independent probability for this market.
-        Returns None if the model can't handle this market."""
-        pass
-
-    def can_handle(self, market) -> bool:
-        """Check if this model can handle the given market. Override in subclass."""
-        return True
+    def _fallback(self, market) -> dict:
+        """Fallback when model cannot calculate."""
+        yes_price = 0.5
+        if hasattr(market, 'yes_price'):
+            yes_price = market.yes_price
+        elif isinstance(market, dict):
+            yes_price = market.get('yes_price', 0.5)
+        return {
+            'probability': yes_price,
+            'confidence': 0.05,
+            'method': 'fallback_market_price',
+            'factors': {},
+            'reasoning': 'Model could not process this market. Using market price as estimate.'
+        }

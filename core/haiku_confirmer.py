@@ -1,10 +1,14 @@
-import json
-import logging
+"""
+core/haiku_confirmer.py — V2.1 Haiku edge confirmation.
+Threshold lowered: 5% (was 12%).
+"""
+
 import os
-from typing import Optional, Dict
+import logging
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class HaikuResult:
@@ -12,122 +16,137 @@ class HaikuResult:
     adjusted_edge: float
     reason: str
     tokens_used: int = 0
-    cost_usd: float = 0.0
+
 
 class HaikuConfirmer:
-    MODEL = 'claude-haiku-4-5-20251001'
-    MAX_TOKENS = 250
-    # Haiku pricing: $0.80/1M input, $4.00/1M output
-    INPUT_COST_PER_TOKEN = 0.80 / 1_000_000
-    OUTPUT_COST_PER_TOKEN = 4.00 / 1_000_000
+    # Haiku 4.5 pricing per token
+    PRICE_IN = 0.80 / 1_000_000   # $0.80 per 1M input tokens
+    PRICE_OUT = 4.00 / 1_000_000  # $4.00 per 1M output tokens
 
-    def __init__(self, config: dict, db_session):
+    def __init__(self, config: dict, session):
         self.config = config
-        self.session = db_session
-        self.max_daily = config.get('api_limits', {}).get('max_haiku_calls_per_day', 20)
+        self.session = session
+        self.limits = config.get('api_limits', {})
+        self.filters = config.get('filters', {})
+        self._client = None
 
-        api_key = os.environ.get('ANTHROPIC_API_KEY', '')
-        self.enabled = bool(api_key)
-        self.client = None
-        if self.enabled:
+    def _get_client(self):
+        if self._client is None:
             try:
-                from anthropic import Anthropic
-                self.client = Anthropic(api_key=api_key)
+                import anthropic
+                self._client = anthropic.Anthropic(
+                    api_key=os.environ.get('ANTHROPIC_API_KEY', '')
+                )
             except Exception as e:
                 logger.error(f"Failed to init Anthropic client: {e}")
-                self.enabled = False
+        return self._client
 
-    def confirm_edge(self, market, model_result, edge_result) -> HaikuResult:
-        """Use Haiku to confirm or deny the mathematical edge.
-        Called ONLY when math model finds edge > 8%."""
+    def confirm_edge(self, market, model_result: dict, edge_result) -> HaikuResult:
+        """Confirm or deny an edge found by the math model."""
+        from core.database import get_daily_api_calls, record_api_call
 
-        # Guard: check daily limit
-        from core.database import get_daily_api_calls
+        max_calls = self.limits.get('max_haiku_calls_per_day', 30)
         daily_calls = get_daily_api_calls(self.session, 'haiku')
-        if daily_calls >= self.max_daily:
-            logger.warning(f"Haiku daily limit reached ({daily_calls}/{self.max_daily})")
-            return HaikuResult(confirmed=False, adjusted_edge=0, reason="daily limit reached")
 
-        if not self.enabled or not self.client:
-            logger.warning("Haiku not available (no API key)")
-            return HaikuResult(confirmed=False, adjusted_edge=0, reason="API not configured")
-
-        try:
-            # Build SHORT prompt (minimize tokens = minimize cost)
-            direction = edge_result.best_direction
-            edge_pct = edge_result.best_edge * 100
-            conf_pct = model_result.confidence * 100
-
-            prompt = (
-                f'Marché: "{market.question}"\n'
-                f'Prix YES: {market.yes_price:.2f} | Prix NO: {market.no_price:.2f}\n'
-                f'Mon modèle dit: proba={model_result.probability:.0%}, '
-                f'edge={edge_pct:.0f}% vers {direction}\n'
-                f'Méthode: {model_result.method}\n'
-                f'Facteurs: {json.dumps(model_result.factors, default=str)[:200]}\n'
-                f'Confirmes-tu cet edge? Réponds JSON uniquement:\n'
-                f'{{"confirmed":true/false,"adjusted_edge":float,"reason":"max 10 mots"}}'
+        if daily_calls >= max_calls:
+            return HaikuResult(
+                confirmed=False,
+                adjusted_edge=edge_result.confidence_adjusted_edge,
+                reason=f"Daily Haiku limit reached ({daily_calls}/{max_calls})"
             )
 
-            response = self.client.messages.create(
-                model=self.MODEL,
-                max_tokens=self.MAX_TOKENS,
+        client = self._get_client()
+        if not client:
+            return HaikuResult(
+                confirmed=False,
+                adjusted_edge=edge_result.confidence_adjusted_edge,
+                reason="Anthropic client unavailable"
+            )
+
+        question = market.question if hasattr(market, 'question') else market.get('question', '')
+        yes_price = market.yes_price if hasattr(market, 'yes_price') else market.get('yes_price', 0.5)
+        direction = edge_result.best_direction
+        edge_pct = edge_result.best_edge * 100
+
+        prompt = (
+            f"You are a prediction market analyst. Evaluate this edge opportunity.\n\n"
+            f"Market: {question}\n"
+            f"Market price (YES): {yes_price:.2f}\n"
+            f"Model probability: {model_result.get('probability', 0.5):.2f}\n"
+            f"Model method: {model_result.get('method', 'unknown')}\n"
+            f"Model reasoning: {model_result.get('reasoning', '')}\n"
+            f"Suggested direction: {direction}\n"
+            f"Raw edge: +{edge_pct:.1f}%\n\n"
+            f"Is this edge real and worth investigating further?\n"
+            f"Reply with exactly: CONFIRM or DENY, then one sentence reason.\n"
+            f"Example: CONFIRM The model correctly identifies..."
+        )
+
+        try:
+            response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=80,
                 messages=[{"role": "user", "content": prompt}]
             )
 
-            # Parse response
-            text = response.content[0].text.strip()
             tokens_in = response.usage.input_tokens
             tokens_out = response.usage.output_tokens
-            cost = tokens_in * self.INPUT_COST_PER_TOKEN + tokens_out * self.OUTPUT_COST_PER_TOKEN
+            cost = tokens_in * self.PRICE_IN + tokens_out * self.PRICE_OUT
 
-            # Log API usage
-            from core.database import record_api_call
+            record_api_call(
+                self.session,
+                model='haiku',
+                tokens_in=tokens_in,
+                tokens_out=tokens_out,
+                cost_usd=cost,
+                market_id=edge_result.market_id,
+                was_useful=False,  # Updated below if confirmed
+            )
 
-            # Parse JSON from response (handle markdown code blocks)
-            json_text = text
-            if '```' in json_text:
-                json_text = json_text.split('```')[1]
-                if json_text.startswith('json'):
-                    json_text = json_text[4:]
-                json_text = json_text.strip()
+            text = response.content[0].text.strip()
+            confirmed = text.upper().startswith('CONFIRM')
+            reason = text[7:].strip() if confirmed else text[5:].strip()
 
-            # Find JSON object
-            start = json_text.find('{')
-            end = json_text.rfind('}')
-            if start >= 0 and end > start:
-                json_text = json_text[start:end+1]
+            # V2.1: threshold lowered to 5% (was 12%)
+            min_confirmed_edge = self.filters.get('min_confirmed_edge', 0.05)
+            adj_edge = edge_result.confidence_adjusted_edge
 
-            parsed = json.loads(json_text)
-            confirmed = parsed.get('confirmed', False)
-            adjusted_edge = float(parsed.get('adjusted_edge', 0))
-            reason = str(parsed.get('reason', ''))[:100]
-
-            # Check if adjusted edge meets threshold
-            min_confirmed = self.config.get('filters', {}).get('min_confirmed_edge', 0.12)
-            if confirmed and adjusted_edge < min_confirmed:
+            if confirmed and adj_edge < min_confirmed_edge:
                 confirmed = False
-                reason = f"adjusted edge {adjusted_edge:.0%} below {min_confirmed:.0%} threshold"
+                reason = f"Haiku confirmed but adj_edge {adj_edge:.1%} < {min_confirmed_edge:.0%}"
+            elif confirmed:
+                # Update was_useful on the record
+                try:
+                    from core.database import ApiUsage
+                    from sqlalchemy import desc
+                    latest = (
+                        self.session.query(ApiUsage)
+                        .filter(ApiUsage.model == 'haiku', ApiUsage.market_id == edge_result.market_id)
+                        .order_by(desc(ApiUsage.timestamp))
+                        .first()
+                    )
+                    if latest:
+                        latest.was_useful = True
+                        self.session.commit()
+                except Exception:
+                    pass
 
-            record_api_call(self.session, 'haiku', tokens_in, tokens_out, cost,
-                          market_id=market.market_id, was_useful=confirmed)
-
-            logger.info(f"Haiku [{market.market_id[:8]}]: confirmed={confirmed}, "
-                       f"adj_edge={adjusted_edge:.1%}, reason='{reason}', cost=${cost:.4f}")
+            logger.info(
+                f"Haiku [{edge_result.market_id}]: {'CONFIRMED' if confirmed else 'DENIED'} "
+                f"| adj_edge={adj_edge:.1%} | {reason[:60]}"
+            )
 
             return HaikuResult(
                 confirmed=confirmed,
-                adjusted_edge=adjusted_edge,
+                adjusted_edge=adj_edge,
                 reason=reason,
                 tokens_used=tokens_in + tokens_out,
-                cost_usd=cost
             )
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Haiku JSON parse error: {e}")
-            record_api_call(self.session, 'haiku', 0, 0, 0,
-                          market_id=market.market_id, was_useful=False)
-            return HaikuResult(confirmed=False, adjusted_edge=0, reason=f"JSON parse error: {e}")
         except Exception as e:
-            logger.error(f"Haiku error: {e}")
-            return HaikuResult(confirmed=False, adjusted_edge=0, reason=f"Error: {str(e)[:50]}")
+            logger.error(f"Haiku API error: {e}", exc_info=True)
+            return HaikuResult(
+                confirmed=False,
+                adjusted_edge=edge_result.confidence_adjusted_edge,
+                reason=f"API error: {str(e)[:50]}"
+            )

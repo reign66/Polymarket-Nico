@@ -1,327 +1,193 @@
-import os
+"""NBA Elo model with ESPN injuries and BDL game data."""
+
 import json
-import re
+import os
+import time
 import logging
 import requests
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
-from .base_model import MathModel, ProbabilityResult
+from core.math_models.base_model import MathModel
 
 logger = logging.getLogger(__name__)
 
-# NBA team name aliases for matching market questions
 NBA_TEAMS = {
-    'lakers': 'LAL', 'celtics': 'BOS', 'warriors': 'GSW', 'bucks': 'MIL',
-    'nuggets': 'DEN', 'heat': 'MIA', 'sixers': 'PHI', '76ers': 'PHI',
-    'nets': 'BKN', 'knicks': 'NYK', 'suns': 'PHX', 'mavericks': 'DAL',
-    'clippers': 'LAC', 'rockets': 'HOU', 'spurs': 'SAS', 'grizzlies': 'MEM',
-    'timberwolves': 'MIN', 'thunder': 'OKC', 'pelicans': 'NOP', 'kings': 'SAC',
-    'pacers': 'IND', 'hawks': 'ATL', 'bulls': 'CHI', 'pistons': 'DET',
-    'magic': 'ORL', 'raptors': 'TOR', 'hornets': 'CHA', 'wizards': 'WAS',
-    'trail blazers': 'POR', 'blazers': 'POR', 'jazz': 'UTA', 'cavaliers': 'CLE',
-    'los angeles lakers': 'LAL', 'boston celtics': 'BOS', 'golden state warriors': 'GSW',
-    'milwaukee bucks': 'MIL', 'denver nuggets': 'DEN', 'miami heat': 'MIA',
-    'philadelphia 76ers': 'PHI', 'brooklyn nets': 'BKN', 'new york knicks': 'NYK',
-    'phoenix suns': 'PHX', 'dallas mavericks': 'DAL', 'la clippers': 'LAC',
-    'houston rockets': 'HOU', 'san antonio spurs': 'SAS', 'memphis grizzlies': 'MEM',
-    'minnesota timberwolves': 'MIN', 'oklahoma city thunder': 'OKC',
-    'new orleans pelicans': 'NOP', 'sacramento kings': 'SAC', 'indiana pacers': 'IND',
-    'atlanta hawks': 'ATL', 'chicago bulls': 'CHI', 'detroit pistons': 'DET',
-    'orlando magic': 'ORL', 'toronto raptors': 'TOR', 'charlotte hornets': 'CHA',
-    'washington wizards': 'WAS', 'portland trail blazers': 'POR', 'utah jazz': 'UTA',
-    'cleveland cavaliers': 'CLE'
+    "lakers": "LAL", "los angeles lakers": "LAL", "lal": "LAL",
+    "celtics": "BOS", "boston celtics": "BOS", "bos": "BOS",
+    "warriors": "GSW", "golden state warriors": "GSW", "gsw": "GSW",
+    "bucks": "MIL", "milwaukee bucks": "MIL", "mil": "MIL",
+    "nuggets": "DEN", "denver nuggets": "DEN", "den": "DEN",
+    "heat": "MIA", "miami heat": "MIA", "mia": "MIA",
+    "suns": "PHX", "phoenix suns": "PHX", "phx": "PHX",
+    "nets": "BKN", "brooklyn nets": "BKN", "bkn": "BKN",
+    "knicks": "NYK", "new york knicks": "NYK", "nyk": "NYK",
+    "76ers": "PHI", "sixers": "PHI", "philadelphia 76ers": "PHI", "phi": "PHI",
+    "clippers": "LAC", "los angeles clippers": "LAC", "lac": "LAC",
+    "mavericks": "DAL", "mavs": "DAL", "dallas mavericks": "DAL", "dal": "DAL",
+    "thunder": "OKC", "oklahoma city thunder": "OKC", "okc": "OKC",
+    "cavaliers": "CLE", "cavs": "CLE", "cleveland cavaliers": "CLE", "cle": "CLE",
+    "timberwolves": "MIN", "wolves": "MIN", "minnesota timberwolves": "MIN", "min": "MIN",
+    "hawks": "ATL", "atlanta hawks": "ATL", "atl": "ATL",
+    "bulls": "CHI", "chicago bulls": "CHI", "chi": "CHI",
+    "pistons": "DET", "detroit pistons": "DET", "det": "DET",
+    "pacers": "IND", "indiana pacers": "IND", "ind": "IND",
+    "grizzlies": "MEM", "memphis grizzlies": "MEM", "mem": "MEM",
+    "pelicans": "NOP", "new orleans pelicans": "NOP", "nop": "NOP",
+    "magic": "ORL", "orlando magic": "ORL", "orl": "ORL",
+    "raptors": "TOR", "toronto raptors": "TOR", "tor": "TOR",
+    "wizards": "WAS", "washington wizards": "WAS", "was": "WAS",
+    "hornets": "CHA", "charlotte hornets": "CHA", "cha": "CHA",
+    "jazz": "UTA", "utah jazz": "UTA", "uta": "UTA",
+    "kings": "SAC", "sacramento kings": "SAC", "sac": "SAC",
+    "spurs": "SAS", "san antonio spurs": "SAS", "sas": "SAS",
+    "blazers": "POR", "trail blazers": "POR", "portland trail blazers": "POR", "por": "POR",
+    "rockets": "HOU", "houston rockets": "HOU", "hou": "HOU",
 }
 
-ELO_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    'data', 'elo_ratings.json'
-)
-DEFAULT_ELO = 1500
-K_FACTOR = 20
-HOME_ADVANTAGE = 60
-BACK_TO_BACK_PENALTY = -30
-WIN_STREAK_BONUS = 15
-LOSS_STREAK_PENALTY = -15
-STREAK_THRESHOLD = 3
+BDL_BASE = "https://api.balldontlie.io/v1"
+ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 
 
 class EloModel(MathModel):
-    """NBA Elo rating model for match outcome probability."""
+    def __init__(self):
+        self.elo_file = "data/elo_ratings.json"
+        self.ratings = self._load_ratings()
+        self._injury_cache = {}
+        self._injury_cache_time = 0
 
-    def __init__(self, config: dict):
-        super().__init__(config)
-        self.ratings: Dict[str, float] = self._load_ratings()
-
-    def _load_ratings(self) -> Dict[str, float]:
-        """Read from JSON file, return dict of team_code -> rating."""
-        try:
-            if os.path.exists(ELO_FILE):
-                with open(ELO_FILE, 'r') as f:
+    def _load_ratings(self):
+        if os.path.exists(self.elo_file):
+            try:
+                with open(self.elo_file) as f:
                     return json.load(f)
-        except Exception as e:
-            logger.warning(f"Could not load Elo ratings from {ELO_FILE}: {e}")
-        return {}
+            except Exception:
+                pass
+        return {abbr: 1500 for abbr in set(NBA_TEAMS.values())}
 
     def _save_ratings(self):
-        """Write ratings dict to JSON file."""
-        try:
-            os.makedirs(os.path.dirname(ELO_FILE), exist_ok=True)
-            with open(ELO_FILE, 'w') as f:
-                json.dump(self.ratings, f, indent=2)
-        except Exception as e:
-            logger.warning(f"Could not save Elo ratings: {e}")
-
-    def _get_team_from_text(self, text: str) -> Optional[str]:
-        """Scan text for any NBA team name/alias, return team code."""
-        text_lower = text.lower()
-        # Sort by length descending so longer aliases match first
-        for alias in sorted(NBA_TEAMS.keys(), key=len, reverse=True):
-            if alias in text_lower:
-                return NBA_TEAMS[alias]
-        return None
-
-    def _find_teams_in_question(self, question: str) -> Tuple[Optional[str], Optional[str]]:
-        """Find two teams mentioned in market question.
-
-        Tries patterns like 'Team A vs Team B', 'Will Team A beat Team B', 'Team A win'.
-        Returns (team_a, team_b) or (team_a, None).
-        """
-        q_lower = question.lower()
-
-        # Pattern: "X vs Y" or "X v Y"
-        vs_patterns = [
-            r'(.+?)\s+vs\.?\s+(.+)',
-            r'(.+?)\s+v\.?\s+(.+)',
-            r'will\s+(.+?)\s+beat\s+(.+)',
-            r'will\s+(.+?)\s+defeat\s+(.+)',
-        ]
-        for pattern in vs_patterns:
-            match = re.search(pattern, q_lower)
-            if match:
-                team_a = self._get_team_from_text(match.group(1))
-                team_b = self._get_team_from_text(match.group(2))
-                if team_a and team_b:
-                    return team_a, team_b
-                if team_a:
-                    return team_a, None
-
-        # Fallback: find all teams mentioned in order
-        found = []
-        text_lower = q_lower
-        for alias in sorted(NBA_TEAMS.keys(), key=len, reverse=True):
-            if alias in text_lower:
-                code = NBA_TEAMS[alias]
-                if code not in found:
-                    found.append(code)
-                # Replace to avoid double-matching substrings
-                text_lower = text_lower.replace(alias, '', 1)
-
-        if len(found) >= 2:
-            return found[0], found[1]
-        if len(found) == 1:
-            return found[0], None
-        return None, None
-
-    def _get_team_elo(self, team: str) -> float:
-        """Return team's Elo rating, or DEFAULT_ELO if unknown."""
-        return self.ratings.get(team, DEFAULT_ELO)
-
-    def _calculate_expected_win(self, elo_a: float, elo_b: float) -> float:
-        """Standard Elo formula: probability that A beats B."""
-        return 1.0 / (1.0 + 10 ** ((elo_b - elo_a) / 400))
-
-    def _fetch_recent_games(self) -> List[Dict]:
-        """Fetch ESPN NBA scoreboard, return list of game dicts."""
-        try:
-            url = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard'
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            games = []
-            for event in data.get('events', []):
-                competitions = event.get('competitions', [])
-                if not competitions:
-                    continue
-                comp = competitions[0]
-                competitors = comp.get('competitors', [])
-                if len(competitors) < 2:
-                    continue
-
-                completed = comp.get('status', {}).get('type', {}).get('completed', False)
-                home = next((c for c in competitors if c.get('homeAway') == 'home'), None)
-                away = next((c for c in competitors if c.get('homeAway') == 'away'), None)
-
-                if not home or not away:
-                    continue
-
-                home_abbr = home.get('team', {}).get('abbreviation', '')
-                away_abbr = away.get('team', {}).get('abbreviation', '')
-                home_score = int(home.get('score', 0) or 0)
-                away_score = int(away.get('score', 0) or 0)
-
-                games.append({
-                    'home_team': home_abbr,
-                    'away_team': away_abbr,
-                    'home_score': home_score,
-                    'away_score': away_score,
-                    'completed': completed,
-                })
-            return games
-        except Exception as e:
-            logger.warning(f"Could not fetch recent NBA games: {e}")
-            return []
+        os.makedirs("data", exist_ok=True)
+        with open(self.elo_file, 'w') as f:
+            json.dump(self.ratings, f, indent=2)
 
     def update_ratings(self):
-        """Fetch recent NBA results and update Elo for each completed game."""
-        games = self._fetch_recent_games()
-        updated = 0
-        for game in games:
-            if not game.get('completed'):
-                continue
-            home = game['home_team']
-            away = game['away_team']
-            home_score = game['home_score']
-            away_score = game['away_score']
-
-            if home_score == 0 and away_score == 0:
-                continue
-
-            elo_home = self._get_team_elo(home) + HOME_ADVANTAGE
-            elo_away = self._get_team_elo(away)
-
-            expected_home = self._calculate_expected_win(elo_home, elo_away)
-            actual_home = 1.0 if home_score > away_score else 0.0
-
-            delta_home = K_FACTOR * (actual_home - expected_home)
-
-            self.ratings[home] = self._get_team_elo(home) + delta_home
-            self.ratings[away] = self._get_team_elo(away) - delta_home
-            updated += 1
-
-        if updated > 0:
-            self._save_ratings()
-            logger.info(f"Updated Elo ratings for {updated} completed games.")
-
-    def _get_team_streaks(self) -> Dict[str, int]:
-        """Return dict of team -> streak (positive = win streak, negative = loss streak)."""
+        """Called every 2h by scheduler to update from recent games."""
         try:
-            url = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard'
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-
-            streaks: Dict[str, int] = {}
-            for event in data.get('events', []):
-                for comp in event.get('competitions', []):
-                    for competitor in comp.get('competitors', []):
-                        abbr = competitor.get('team', {}).get('abbreviation', '')
-                        records = competitor.get('records', [])
-                        for record in records:
-                            if record.get('type') == 'streak':
-                                summary = record.get('summary', '')
-                                match = re.match(r'([WL])(\d+)', summary)
-                                if match:
-                                    wl = match.group(1)
-                                    count = int(match.group(2))
-                                    streaks[abbr] = count if wl == 'W' else -count
-            return streaks
+            import datetime
+            today = datetime.date.today().isoformat()
+            yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+            r = requests.get(
+                f"{BDL_BASE}/games",
+                params={"dates[]": [yesterday, today]},
+                timeout=10
+            )
+            if r.status_code != 200:
+                return
+            games = r.json().get('data', [])
+            updated = 0
+            for game in games:
+                if game.get('status') != 'Final':
+                    continue
+                home = game.get('home_team', {}).get('abbreviation', '')
+                away = game.get('visitor_team', {}).get('abbreviation', '')
+                home_score = game.get('home_team_score', 0)
+                away_score = game.get('visitor_team_score', 0)
+                if not home or not away or (home_score == 0 and away_score == 0):
+                    continue
+                home_elo = self.ratings.get(home, 1500)
+                away_elo = self.ratings.get(away, 1500)
+                expected_home = 1 / (1 + 10 ** ((away_elo - home_elo) / 400))
+                result_home = 1 if home_score > away_score else 0
+                K = 20
+                self.ratings[home] = home_elo + K * (result_home - expected_home)
+                self.ratings[away] = away_elo + K * ((1 - result_home) - (1 - expected_home))
+                updated += 1
+            if updated > 0:
+                self._save_ratings()
+                logger.info(f"Updated Elo ratings for {updated} completed games.")
         except Exception as e:
-            logger.warning(f"Could not fetch team streaks: {e}")
-            return {}
+            logger.warning(f"Elo update failed: {e}")
 
-    def _get_rest_days(self, team: str) -> int:
-        """Estimate rest days based on schedule. Default 1 if can't determine."""
-        return 1
+    def _parse_matchup(self, question: str):
+        """Extract two NBA team abbreviations from a question."""
+        question_lower = question.lower()
+        found = []
+        for name, abbr in NBA_TEAMS.items():
+            if name in question_lower:
+                if abbr not in [a for _, a in found]:
+                    pos = question_lower.index(name)
+                    found.append((pos, abbr))
+        if len(found) >= 2:
+            found.sort(key=lambda x: x[0])
+            return found[0][1], found[1][1]
+        if len(found) == 1:
+            return found[0][1], None
+        return None, None
 
-    def calculate_probability(self, market, external_data: dict = None) -> Optional[ProbabilityResult]:
-        """Calculate NBA match or championship probability using Elo ratings."""
-        question = getattr(market, 'question', '') or ''
-        team_a, team_b = self._find_teams_in_question(question)
+    def _fetch_injuries(self, team_abbr: str) -> list:
+        """Fetch injuries via ESPN, cached 4h."""
+        if time.time() - self._injury_cache_time < 14400 and self._injury_cache:
+            return self._injury_cache.get(team_abbr, [])
+        try:
+            r = requests.get(f"{ESPN_BASE}/injuries", timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                self._injury_cache = {}
+                for team in data.get('items', []):
+                    t_abbr = team.get('team', {}).get('abbreviation', '')
+                    injuries = []
+                    for athlete in team.get('injuries', []):
+                        status = athlete.get('status', '').lower()
+                        name = athlete.get('athlete', {}).get('displayName', '')
+                        if status in ['out', 'doubtful']:
+                            injuries.append({'name': name, 'status': status})
+                    self._injury_cache[t_abbr] = injuries
+                self._injury_cache_time = time.time()
+            return self._injury_cache.get(team_abbr, [])
+        except Exception:
+            return []
 
-        if not team_a:
-            return None
+    def calculate_probability(self, market, external_data=None) -> dict:
+        question = market.question if hasattr(market, 'question') else market.get('question', '')
+        team1, team2 = self._parse_matchup(question)
 
-        if team_a and team_b:
-            # Head-to-head match market
-            streaks = self._get_team_streaks()
+        if not team1:
+            return self._fallback(market)
 
-            elo_a = self._get_team_elo(team_a)
-            elo_b = self._get_team_elo(team_b)
+        elo1 = self.ratings.get(team1, 1500)
+        elo2 = self.ratings.get(team2, 1500) if team2 else 1500
 
-            # Home advantage: crude detection from question
-            q_lower = question.lower()
-            home_team_a = any(word in q_lower for word in ['at home', 'host', 'home game'])
-            if home_team_a:
-                elo_a += HOME_ADVANTAGE
-            else:
-                # Default: assume team_a is home if listed first
-                elo_a += HOME_ADVANTAGE // 2
+        adjustments1 = 0
+        adjustments2 = 0
+        confidence = 0.50
 
-            # Streak adjustments
-            streak_a = streaks.get(team_a, 0)
-            streak_b = streaks.get(team_b, 0)
-            if abs(streak_a) >= STREAK_THRESHOLD:
-                elo_a += WIN_STREAK_BONUS if streak_a > 0 else LOSS_STREAK_PENALTY
-            if abs(streak_b) >= STREAK_THRESHOLD:
-                elo_b += WIN_STREAK_BONUS if streak_b > 0 else LOSS_STREAK_PENALTY
+        q_lower = question.lower()
+        if "home" in q_lower or "at home" in q_lower:
+            adjustments1 += 60
+            confidence += 0.03
 
-            prob = self._calculate_expected_win(elo_a, elo_b)
+        injuries1 = self._fetch_injuries(team1)
+        injuries2 = self._fetch_injuries(team2) if team2 else []
+        adjustments1 -= len(injuries1) * 40
+        adjustments2 -= len(injuries2) * 40
+        if injuries1 or injuries2:
+            confidence += 0.05
 
-            elo_diff = abs(self._get_team_elo(team_a) - self._get_team_elo(team_b))
-            confidence = min(0.8, 0.6 + (elo_diff / 1000))
+        adj_elo1 = elo1 + adjustments1
+        adj_elo2 = elo2 + adjustments2
+        prob = 1 / (1 + 10 ** ((adj_elo2 - adj_elo1) / 400))
 
-            return ProbabilityResult(
-                probability=prob,
-                confidence=confidence,
-                method='elo_match',
-                factors={
-                    'team_a': team_a,
-                    'team_b': team_b,
-                    'elo_a_base': self._get_team_elo(team_a),
-                    'elo_b_base': self._get_team_elo(team_b),
-                    'elo_a_adjusted': round(elo_a, 1),
-                    'elo_b_adjusted': round(elo_b, 1),
-                    'streak_a': streak_a,
-                    'streak_b': streak_b,
-                    'elo_diff': round(elo_diff, 1),
-                },
-                reasoning=(
-                    f"Elo match: {team_a} ({elo_a:.0f}) vs {team_b} ({elo_b:.0f}). "
-                    f"Win probability for {team_a}: {prob:.1%}"
-                )
+        confidence = min(confidence, 0.75)
+
+        return {
+            'probability': prob,
+            'confidence': confidence,
+            'method': f'Elo({team1}={adj_elo1:.0f} vs {team2 or "avg"}={adj_elo2:.0f})',
+            'factors': {
+                'team1': team1, 'team2': team2,
+                'elo1': round(elo1), 'elo2': round(elo2),
+                'adj1': adjustments1, 'adj2': adjustments2,
+                'injuries1': len(injuries1), 'injuries2': len(injuries2),
+            },
+            'reasoning': (
+                f'{team1}(Elo {adj_elo1:.0f}) vs {team2 or "avg"}(Elo {adj_elo2:.0f}). '
+                f'Prob={prob:.1%}. Injuries: {len(injuries1)} vs {len(injuries2)}.'
             )
-
-        else:
-            # Single team: championship/playoff/MVP market
-            team_elo = self._get_team_elo(team_a)
-            avg_elo = sum(self.ratings.values()) / len(self.ratings) if self.ratings else DEFAULT_ELO
-
-            elo_diff = team_elo - avg_elo
-            # Rough probability: sigmoid-like scaling
-            prob = 0.5 + (elo_diff / 800)
-            prob = max(0.05, min(0.90, prob))
-
-            confidence = 0.3 if abs(elo_diff) > 100 else 0.4 if abs(elo_diff) > 50 else 0.35
-
-            return ProbabilityResult(
-                probability=prob,
-                confidence=confidence,
-                method='elo_ranking',
-                factors={
-                    'team': team_a,
-                    'team_elo': team_elo,
-                    'avg_elo': round(avg_elo, 1),
-                    'elo_diff': round(elo_diff, 1),
-                },
-                reasoning=(
-                    f"Elo ranking: {team_a} Elo={team_elo:.0f}, league avg={avg_elo:.0f}. "
-                    f"Rough probability: {prob:.1%}"
-                )
-            )
-
-    def can_handle(self, market) -> bool:
-        """True if at least one NBA team found in question."""
-        question = getattr(market, 'question', '') or ''
-        team, _ = self._find_teams_in_question(question)
-        return team is not None
+        }

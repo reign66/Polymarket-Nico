@@ -1,305 +1,232 @@
-import re
-import math
-import logging
-import requests
+"""GBM crypto model with CoinGecko data, regime detection, Fear & Greed."""
+
 import numpy as np
-from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
 from scipy.stats import norm
-from .base_model import MathModel, ProbabilityResult
+import requests
+import time
+import re
+import datetime
+import logging
+from core.math_models.base_model import MathModel
 
 logger = logging.getLogger(__name__)
 
-COINGECKO_API = 'https://api.coingecko.com/api/v3'
-HEADERS = {'User-Agent': 'PolymarketBot/2.0'}
-
-CRYPTO_IDS = {
-    'bitcoin': 'bitcoin', 'btc': 'bitcoin',
-    'ethereum': 'ethereum', 'eth': 'ethereum',
-    'solana': 'solana', 'sol': 'solana',
-    'xrp': 'ripple', 'ripple': 'ripple',
-    'cardano': 'cardano', 'ada': 'cardano',
-    'dogecoin': 'dogecoin', 'doge': 'dogecoin',
-    'polkadot': 'polkadot', 'dot': 'polkadot',
-    'chainlink': 'chainlink', 'link': 'chainlink',
-    'avalanche': 'avalanche-2', 'avax': 'avalanche-2',
-    'polygon': 'matic-network', 'matic': 'matic-network',
-}
-
 
 class CryptoModel(MathModel):
-    """Crypto price probability model using Geometric Brownian Motion."""
+    CRYPTO_MAP = {
+        "bitcoin": "bitcoin", "btc": "bitcoin",
+        "ethereum": "ethereum", "eth": "ethereum",
+        "solana": "solana", "sol": "solana",
+        "xrp": "ripple", "ripple": "ripple",
+        "cardano": "cardano", "ada": "cardano",
+        "dogecoin": "dogecoin", "doge": "dogecoin",
+        "bnb": "binancecoin", "binance coin": "binancecoin",
+        "avalanche": "avalanche-2", "avax": "avalanche-2",
+        "polygon": "matic-network", "matic": "matic-network",
+        "polkadot": "polkadot", "dot": "polkadot",
+        "chainlink": "chainlink", "link": "chainlink",
+        "litecoin": "litecoin", "ltc": "litecoin",
+    }
 
-    def __init__(self, config: dict):
-        super().__init__(config)
-        self._cache: Dict[str, Tuple[Any, datetime]] = {}
+    def __init__(self):
+        self._cache = {}
+        self._fng_cache = None
+        self._fng_time = 0
 
-    def _request(self, url: str, params: dict = None, cache_seconds: int = 300) -> Any:
-        """Cached GET request with one retry."""
-        cache_key = f"{url}:{str(params)}"
-        now = datetime.utcnow()
+    def _fetch_coingecko(self, coin_id: str, days: int = 90):
+        cache_key = f"{coin_id}_{days}"
         if cache_key in self._cache:
-            cached_data, cached_time = self._cache[cache_key]
-            if (now - cached_time).total_seconds() < cache_seconds:
-                return cached_data
-
-        for attempt in range(2):
-            try:
-                resp = requests.get(url, headers=HEADERS, params=params, timeout=10)
-                resp.raise_for_status()
-                data = resp.json()
-                self._cache[cache_key] = (data, now)
+            ts, data = self._cache[cache_key]
+            if time.time() - ts < 1800:
                 return data
-            except Exception as e:
-                if attempt == 1:
-                    logger.warning(f"Request failed for {url}: {e}")
-                    raise
-        return None
-
-    def _get_coin_data(self, coin_id: str) -> Dict:
-        """Fetch current market data for a coin from CoinGecko."""
         try:
-            url = f'{COINGECKO_API}/coins/{coin_id}'
-            params = {
-                'localization': 'false',
-                'tickers': 'false',
-                'community_data': 'false',
-                'developer_data': 'false',
-            }
-            data = self._request(url, params=params, cache_seconds=60)
-            market_data = data.get('market_data', {})
-
-            return {
-                'price': market_data.get('current_price', {}).get('usd', 0),
-                'market_cap': market_data.get('market_cap', {}).get('usd', 0),
-                'volume_24h': market_data.get('total_volume', {}).get('usd', 0),
-                'price_change_24h': market_data.get('price_change_percentage_24h', 0),
-                'price_change_7d': market_data.get('price_change_percentage_7d', 0),
-                'price_change_30d': market_data.get('price_change_percentage_30d', 0),
-            }
+            url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+            r = requests.get(url, params={"vs_currency": "usd", "days": days}, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            self._cache[cache_key] = (time.time(), data)
+            return data
         except Exception as e:
-            logger.warning(f"Could not fetch coin data for {coin_id}: {e}")
-            return {}
+            logger.warning(f"CoinGecko fetch failed for {coin_id}: {e}")
+            return None
 
-    def _get_price_history(self, coin_id: str, days: int = 90) -> list:
-        """Fetch daily price history for a coin from CoinGecko."""
+    def _fetch_fear_greed(self):
+        if self._fng_cache and time.time() - self._fng_time < 21600:
+            return self._fng_cache
         try:
-            url = f'{COINGECKO_API}/coins/{coin_id}/market_chart'
-            params = {'vs_currency': 'usd', 'days': days}
-            data = self._request(url, params=params, cache_seconds=3600)
-            prices_raw = data.get('prices', [])
-            # Each entry is [timestamp_ms, price]
-            return [entry[1] for entry in prices_raw if len(entry) == 2]
-        except Exception as e:
-            logger.warning(f"Could not fetch price history for {coin_id}: {e}")
-            return []
+            r = requests.get("https://api.alternative.me/fng/?limit=30", timeout=10)
+            data = r.json().get('data', [])
+            self._fng_cache = data
+            self._fng_time = time.time()
+            return data
+        except Exception:
+            return None
 
-    def _calculate_gbm_probability(
-        self,
-        current_price: float,
-        target_price: float,
-        days: float,
-        mu: float,
-        sigma: float
-    ) -> float:
-        """Geometric Brownian Motion analytical probability of reaching target_price."""
-        if days <= 0 or sigma <= 0 or current_price <= 0 or target_price <= 0:
-            return 0.5
-        d = (
-            math.log(target_price / current_price) - (mu - sigma ** 2 / 2) * days
-        ) / (sigma * math.sqrt(days))
-        prob_above = 1 - norm.cdf(d)
-        return max(0.02, min(0.98, prob_above))
+    def _detect_regime(self, prices):
+        if len(prices) < 50:
+            return "neutral", 1.0
+        arr = np.array(prices)
+        ma20 = np.mean(arr[-20:])
+        ma50 = np.mean(arr[-50:])
+        current = arr[-1]
+        if len(prices) >= 200:
+            ma200 = np.mean(arr[-200:])
+            if current > ma20 > ma50 > ma200:
+                return "strong_bull", 1.3
+            elif current < ma20 < ma50 < ma200:
+                return "strong_bear", 0.7
+        if current > ma20 > ma50:
+            return "bull", 1.15
+        elif current < ma20 < ma50:
+            return "bear", 0.85
+        return "neutral", 1.0
 
-    def _extract_price_target(self, question: str) -> Optional[Tuple[str, float, str]]:
-        """Parse market question for coin + price target.
+    def _parse_target(self, text: str):
+        """Parse price target and direction (above/below) from question."""
+        text_lower = text.lower()
+        is_above = True
+        target = None
 
-        Returns (coin_id, target_price, direction) where direction is 'above' or 'below'.
-        Returns None if no target found.
-        """
-        q_lower = question.lower()
+        patterns = [
+            r'\$\s*([\d,]+\.?\d*)\s*k\b',
+            r'\$\s*([\d,]+\.?\d*)',
+            r'([\d,]+\.?\d*)\s*(?:usd|dollars?)',
+            r'(?:above|over|exceed|hit|reach|surpass)\s+\$?([\d,]+\.?\d*)',
+            r'(?:below|under|drop|fall)\s+\$?([\d,]+\.?\d*)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                val = match.group(1).replace(',', '')
+                try:
+                    target = float(val)
+                except Exception:
+                    continue
+                end = match.end()
+                if 'k' in text_lower[end:end+2]:
+                    target *= 1000
+                ctx = text_lower[max(0, match.start()-20):match.start()]
+                if any(w in ctx for w in ['below', 'under', 'drop', 'fall']):
+                    is_above = False
+                break
 
-        # Find coin
+        return target, is_above
+
+    def calculate_probability(self, market, external_data=None) -> dict:
+        question = market.question if hasattr(market, 'question') else market.get('question', '')
+        description = market.description if hasattr(market, 'description') else market.get('description', '')
+        text = f"{question} {description}".lower()
+
+        # 1. Identify crypto
         coin_id = None
-        for alias in sorted(CRYPTO_IDS.keys(), key=len, reverse=True):
-            if alias in q_lower:
-                coin_id = CRYPTO_IDS[alias]
+        for name, cg_id in self.CRYPTO_MAP.items():
+            if name in text:
+                coin_id = cg_id
                 break
         if not coin_id:
-            return None
+            return self._fallback(market)
 
-        # Find price target — patterns like $100,000 or $100k or 100000
-        price_patterns = [
-            r'\$\s*([\d,]+(?:\.\d+)?)\s*k\b',   # $100k
-            r'\$\s*([\d,]+(?:\.\d+)?)',            # $100,000 or $100
-            r'([\d,]+(?:\.\d+)?)\s*(?:usd|dollars)',
-        ]
+        # 2. Parse target price
+        target, is_above = self._parse_target(text)
+        if not target or target <= 0:
+            return self._fallback(market)
 
-        target_price = None
-        for pattern in price_patterns:
-            match = re.search(pattern, q_lower)
-            if match:
-                raw = match.group(1).replace(',', '')
-                try:
-                    price = float(raw)
-                    # Handle k suffix
-                    if 'k' in match.group(0).lower():
-                        price *= 1000
-                    target_price = price
-                    break
-                except ValueError:
-                    continue
+        # 3. Parse end date
+        end_date_str = (market.end_date if hasattr(market, 'end_date') else
+                       market.get('end_date') or market.get('endDate'))
+        target_date = None
+        if end_date_str:
+            try:
+                if 'T' in str(end_date_str):
+                    target_date = datetime.datetime.fromisoformat(
+                        str(end_date_str).replace('Z', '+00:00'))
+                else:
+                    target_date = datetime.datetime.strptime(str(end_date_str), '%Y-%m-%d')
+            except Exception:
+                pass
+        if not target_date:
+            return self._fallback(market)
 
-        if target_price is None:
-            return None
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if target_date.tzinfo is None:
+            target_date = target_date.replace(tzinfo=datetime.timezone.utc)
+        days = (target_date - now).total_seconds() / 86400
+        if days <= 0:
+            return self._fallback(market)
 
-        # Determine direction
-        above_words = ['above', 'over', 'exceed', 'hit', 'reach', 'break']
-        below_words = ['below', 'under', 'drop', 'fall']
-        direction = 'above'
-        for word in below_words:
-            if word in q_lower:
-                direction = 'below'
-                break
+        # 4. Fetch CoinGecko
+        history = self._fetch_coingecko(coin_id, days=90)
+        if not history or 'prices' not in history or len(history['prices']) < 10:
+            return self._fallback(market)
 
-        return coin_id, target_price, direction
+        prices = [p[1] for p in history['prices']]
+        current = prices[-1]
 
-    def _extract_date_from_question(self, question: str, market_end_date: str) -> int:
-        """Extract days remaining from question or market end_date."""
-        now = datetime.utcnow()
+        # 5. GBM parameters
+        log_returns = np.diff(np.log(prices))
+        if len(log_returns) < 5:
+            return self._fallback(market)
+        mu_daily = np.mean(log_returns)
+        sigma_daily = max(np.std(log_returns), 0.001)
 
-        # Try to parse a date from the question
-        date_patterns = [
-            r'by\s+(\w+\s+\d{1,2},?\s+\d{4})',
-            r'before\s+(\w+\s+\d{1,2},?\s+\d{4})',
-            r'end of\s+(\w+\s+\d{4})',
-        ]
-        month_map = {
-            'january': 1, 'february': 2, 'march': 3, 'april': 4,
-            'may': 5, 'june': 6, 'july': 7, 'august': 8,
-            'september': 9, 'october': 10, 'november': 11, 'december': 12,
-            'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'jun': 6,
-            'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12,
-        }
+        # 6. Regime adjustment
+        regime, regime_factor = self._detect_regime(prices)
+        mu_adj = mu_daily * regime_factor
 
-        q_lower = question.lower()
-        for pattern in date_patterns:
-            match = re.search(pattern, q_lower)
-            if match:
-                date_str = match.group(1).strip()
-                try:
-                    for fmt in ['%B %d, %Y', '%B %d %Y', '%B %Y']:
-                        try:
-                            parsed = datetime.strptime(date_str.title(), fmt)
-                            days = (parsed - now).days
-                            return max(1, days)
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass
+        # 7. Fear & Greed
+        fng = self._fetch_fear_greed()
+        fng_val = None
+        if fng and len(fng) > 0:
+            try:
+                fng_val = int(fng[0].get('value', 50))
+                if fng_val < 20:
+                    mu_adj += 0.001
+                elif fng_val > 80:
+                    mu_adj -= 0.001
+            except Exception:
+                pass
 
-        # Fall back to market end date
-        if market_end_date:
-            for fmt in ['%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
-                try:
-                    end = datetime.strptime(market_end_date, fmt)
-                    days = (end - now).days
-                    return max(1, days)
-                except ValueError:
-                    continue
-
-        return 30  # default fallback
-
-    def _calculate_volatility(self, prices: list) -> Tuple[float, float]:
-        """Compute (mu, sigma) from daily price history using log returns."""
-        if len(prices) < 10:
-            return 0.0, 0.5  # high uncertainty default
-
-        log_returns = [
-            math.log(prices[i] / prices[i - 1])
-            for i in range(1, len(prices))
-            if prices[i - 1] > 0 and prices[i] > 0
-        ]
-        if not log_returns:
-            return 0.0, 0.5
-
-        mu = float(np.mean(log_returns))     # daily mean return
-        sigma = float(np.std(log_returns))   # daily volatility
-        return mu, sigma
-
-    def calculate_probability(self, market, external_data: dict = None) -> Optional[ProbabilityResult]:
-        """Calculate crypto price probability using GBM or fall back to market prior."""
-        question = getattr(market, 'question', '') or ''
-        end_date = getattr(market, 'end_date_iso', None) or getattr(market, 'end_date', None) or ''
-
-        extracted = self._extract_price_target(question)
-
-        if not extracted:
-            # Binary event (ETF approval etc.): trust market price, very low confidence
-            market_price = getattr(market, 'yes_price', 0.5) or 0.5
-            return ProbabilityResult(
-                probability=market_price,
-                confidence=0.15,
-                method='market_prior',
-                factors={'market_price': market_price, 'reason': 'no_price_target'},
-                reasoning="No price target found; trusting market price as prior. Confidence very low."
-            )
-
-        coin_id, target_price, direction = extracted
-
-        coin_data = self._get_coin_data(coin_id)
-        current_price = coin_data.get('price', 0)
-        if not current_price or current_price <= 0:
-            return None
-
-        history = self._get_price_history(coin_id, days=90)
-        mu, sigma = self._calculate_volatility(history)
-
-        # Volatility adjustment: if recent 24h change implies spike, increase sigma
-        if history and len(history) >= 10:
-            recent_history = history[-7:]  # last 7 days
-            _, recent_sigma = self._calculate_volatility(recent_history)
-            if recent_sigma > 2 * sigma:
-                sigma *= 1.2
-
-        days = self._extract_date_from_question(question, str(end_date))
-        prob_above = self._calculate_gbm_probability(current_price, target_price, days, mu, sigma)
-        probability = prob_above if direction == 'above' else 1.0 - prob_above
-
-        # Confidence: higher for longer timeframes (more data predictive power), lower for short
-        if days >= 180:
-            confidence = 0.70
-        elif days >= 60:
-            confidence = 0.65
-        elif days >= 14:
-            confidence = 0.60
+        # 8. Volatility adjustment
+        if days > 60:
+            sigma_adj = sigma_daily * 0.9
+        elif days < 7 and len(log_returns) >= 7:
+            sigma_adj = np.std(log_returns[-7:])
         else:
-            confidence = 0.50
+            sigma_adj = sigma_daily
+        sigma_adj = max(sigma_adj, 0.005)
 
-        return ProbabilityResult(
-            probability=probability,
-            confidence=confidence,
-            method='gbm',
-            factors={
-                'coin': coin_id,
-                'current_price': current_price,
-                'target_price': target_price,
-                'direction': direction,
-                'mu_daily': round(mu, 6),
-                'sigma_daily': round(sigma, 6),
-                'days': days,
-                'annualized_vol': round(sigma * math.sqrt(252), 4),
+        # 9. GBM analytical formula
+        d = (np.log(target / current) - (mu_adj - sigma_adj**2 / 2) * days) \
+            / (sigma_adj * np.sqrt(days))
+        prob = 1 - norm.cdf(d)
+        if not is_above:
+            prob = 1 - prob
+        prob = float(np.clip(prob, 0.02, 0.98))
+
+        # 10. Confidence
+        confidence = 0.40
+        if len(prices) >= 90:
+            confidence += 0.05
+        if abs(current - target) / current < 0.15:
+            confidence += 0.05
+        if regime != "neutral":
+            confidence += 0.05
+        if fng_val is not None:
+            confidence += 0.03
+        confidence = min(confidence, 0.60)
+
+        return {
+            'probability': prob,
+            'confidence': confidence,
+            'method': f'GBM+regime({regime})+FnG({fng_val})',
+            'factors': {
+                'coin': coin_id, 'current': round(current, 2),
+                'target': target, 'days': round(days, 1),
+                'mu': round(mu_adj, 6), 'sigma': round(sigma_adj, 4),
+                'regime': regime, 'fng': fng_val, 'is_above': is_above,
             },
-            reasoning=(
-                f"GBM model: {coin_id} current=${current_price:,.2f}, target=${target_price:,.2f} "
-                f"({direction}), {days} days. "
-                f"Daily vol={sigma:.3f}, drift={mu:.5f}. "
-                f"Probability: {probability:.1%}"
+            'reasoning': (
+                f'{coin_id} ${current:.0f}->${ target:.0f} in {days:.0f}d. '
+                f'GBM={prob:.1%}. Regime={regime}. FnG={fng_val}.'
             )
-        )
-
-    def can_handle(self, market) -> bool:
-        """True if a known crypto coin is found in the market question."""
-        question = getattr(market, 'question', '') or ''
-        q_lower = question.lower()
-        return any(alias in q_lower for alias in CRYPTO_IDS)
+        }

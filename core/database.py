@@ -139,6 +139,26 @@ class NewsHash(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 
+class NicheCache(Base):
+    __tablename__ = "niche_cache"
+
+    market_id = Column(String, primary_key=True)
+    niche = Column(String, nullable=False)
+    classified_by = Column(String, nullable=False)  # gamma_tag / haiku / gamma_tag_sport
+    classified_at = Column(DateTime, default=datetime.utcnow)
+    market_active = Column(Boolean, default=True)
+
+
+class PriceHistory(Base):
+    __tablename__ = "price_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_id = Column(String, nullable=False, index=True)
+    timestamp = Column(Float, nullable=False)
+    yes_price = Column(Float, nullable=False)
+    no_price = Column(Float, nullable=False)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -898,4 +918,186 @@ def save_kpi(session, niche: str, period: str, metrics: dict):
         session.commit()
     except Exception as exc:
         logger.error("save_kpi error niche=%s period=%s: %s", niche, period, exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 26. get_niche_cache
+# ---------------------------------------------------------------------------
+
+
+def get_niche_cache(session, market_id: str) -> str:
+    """Return the cached niche for a market_id, or None if not cached."""
+    try:
+        row = session.query(NicheCache).filter(
+            NicheCache.market_id == market_id,
+            NicheCache.market_active == True,
+        ).first()
+        return row.niche if row else None
+    except Exception as exc:
+        logger.error("get_niche_cache error: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 27. set_niche_cache
+# ---------------------------------------------------------------------------
+
+
+def set_niche_cache(session, market_id: str, niche: str, classified_by: str):
+    """Upsert a niche classification into the cache."""
+    try:
+        row = session.query(NicheCache).filter(
+            NicheCache.market_id == market_id
+        ).first()
+        if row is None:
+            row = NicheCache(market_id=market_id)
+            session.add(row)
+        row.niche = niche
+        row.classified_by = classified_by
+        row.classified_at = datetime.utcnow()
+        row.market_active = True
+        session.commit()
+    except Exception as exc:
+        logger.error("set_niche_cache error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 28. record_price
+# ---------------------------------------------------------------------------
+
+
+def record_price(session, market_id: str, yes_price: float, no_price: float):
+    """Record a price snapshot for price history (momentum models)."""
+    try:
+        import time as _time
+        row = PriceHistory(
+            market_id=market_id,
+            timestamp=_time.time(),
+            yes_price=yes_price,
+            no_price=no_price,
+        )
+        session.add(row)
+        session.commit()
+    except Exception as exc:
+        logger.error("record_price error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 29. get_price_history
+# ---------------------------------------------------------------------------
+
+
+def get_price_history(session, market_id: str, days: int = 14) -> list:
+    """Return price history for a market as list of {timestamp, yes_price}."""
+    try:
+        import time as _time
+        cutoff = _time.time() - days * 86400
+        rows = (
+            session.query(PriceHistory)
+            .filter(
+                PriceHistory.market_id == market_id,
+                PriceHistory.timestamp >= cutoff,
+            )
+            .order_by(PriceHistory.timestamp)
+            .all()
+        )
+        return [
+            {"timestamp": r.timestamp, "yes_price": r.yes_price, "no_price": r.no_price}
+            for r in rows
+        ]
+    except Exception as exc:
+        logger.error("get_price_history error: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# 30. mark_inactive_markets
+# ---------------------------------------------------------------------------
+
+
+def mark_inactive_markets(session, active_market_ids: list):
+    """Mark markets not in active_market_ids as inactive in niche_cache."""
+    try:
+        if not active_market_ids:
+            return
+        session.query(NicheCache).filter(
+            NicheCache.market_id.notin_(active_market_ids),
+            NicheCache.market_active == True,
+        ).update({"market_active": False}, synchronize_session=False)
+        session.commit()
+    except Exception as exc:
+        logger.error("mark_inactive_markets error: %s", exc)
+        session.rollback()
+
+
+# ---------------------------------------------------------------------------
+# 31. cleanup_db
+# ---------------------------------------------------------------------------
+
+
+def cleanup_db(session):
+    """
+    Comprehensive cleanup:
+    - niche_cache: delete inactive markets older than 24h
+    - price_history: delete entries older than 14 days
+    - signals: delete entries older than 30 days
+    - api_usage: delete entries older than 30 days
+    - news_hashes: delete entries older than 7 days
+    - closed positions: delete entries older than 90 days
+    """
+    try:
+        now = datetime.utcnow()
+
+        # niche_cache: inactive > 24h
+        cutoff_24h = now - timedelta(hours=24)
+        deleted = session.query(NicheCache).filter(
+            NicheCache.market_active == False,
+            NicheCache.classified_at < cutoff_24h,
+        ).delete(synchronize_session=False)
+        logger.info(f"cleanup_db: niche_cache removed {deleted} inactive rows")
+
+        # price_history: older than 14 days
+        import time as _time
+        cutoff_14d = _time.time() - 14 * 86400
+        deleted = session.query(PriceHistory).filter(
+            PriceHistory.timestamp < cutoff_14d,
+        ).delete(synchronize_session=False)
+        logger.info(f"cleanup_db: price_history removed {deleted} old rows")
+
+        # signals: older than 30 days
+        cutoff_30d = now - timedelta(days=30)
+        deleted = session.query(Signal).filter(
+            Signal.timestamp < cutoff_30d,
+        ).delete(synchronize_session=False)
+        logger.info(f"cleanup_db: signals removed {deleted} old rows")
+
+        # api_usage: older than 30 days
+        deleted = session.query(ApiUsage).filter(
+            ApiUsage.timestamp < cutoff_30d,
+        ).delete(synchronize_session=False)
+        logger.info(f"cleanup_db: api_usage removed {deleted} old rows")
+
+        # news_hashes: older than 7 days
+        cutoff_7d = now - timedelta(days=7)
+        deleted = session.query(NewsHash).filter(
+            NewsHash.timestamp < cutoff_7d,
+        ).delete(synchronize_session=False)
+        logger.info(f"cleanup_db: news_hashes removed {deleted} old rows")
+
+        # closed positions: older than 90 days
+        cutoff_90d = now - timedelta(days=90)
+        deleted = session.query(Position).filter(
+            Position.status == "closed",
+            Position.exit_time < cutoff_90d,
+        ).delete(synchronize_session=False)
+        logger.info(f"cleanup_db: old closed positions removed {deleted} rows")
+
+        session.commit()
+        logger.info("cleanup_db: complete")
+
+    except Exception as exc:
+        logger.error("cleanup_db error: %s", exc)
         session.rollback()

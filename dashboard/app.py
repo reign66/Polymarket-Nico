@@ -598,10 +598,11 @@ def api_circuit_breakers():
 @app.route("/api/funnel")
 def api_funnel():
     """
-    V2 Funnel stats for today.
+    V2.1 Funnel stats for today.
 
     Returns counts per pipeline step:
     fetched → filtered → classified → math_edge → haiku → sonnet → bet
+    Also returns classifier_cache stats from niche_cache table.
     """
     session = None
     try:
@@ -615,13 +616,42 @@ def api_funnel():
             })
 
         stats = get_funnel_stats(session)
-        return jsonify(stats)
+
+        # Classifier stats from niche_cache table
+        try:
+            from core.database import NicheCache
+            total_cached = session.query(NicheCache).filter(NicheCache.market_active == True).count()
+            gamma_count = session.query(NicheCache).filter(
+                NicheCache.classified_by.like('gamma%'),
+                NicheCache.market_active == True
+            ).count()
+            haiku_count = session.query(NicheCache).filter(
+                NicheCache.classified_by == 'haiku',
+                NicheCache.market_active == True
+            ).count()
+        except Exception:
+            total_cached = 0
+            gamma_count = 0
+            haiku_count = 0
+
+        return jsonify({
+            'funnel': stats,
+            'classifier_cache': {
+                'total': total_cached,
+                'via_gamma': gamma_count,
+                'via_haiku': haiku_count,
+                'cache_hit_rate': (gamma_count + haiku_count) / max(total_cached, 1),
+            },
+            # Keep top-level keys for backward compatibility with existing funnel JS
+            **stats,
+        })
 
     except Exception as exc:
         logger.error("api_funnel error: %s", exc)
         return jsonify({
             "fetched": 0, "filtered": 0, "classified": 0,
             "math_edge": 0, "haiku": 0, "sonnet": 0, "bet": 0,
+            "funnel": {}, "classifier_cache": {},
             "error": str(exc)
         })
     finally:
@@ -664,6 +694,75 @@ def api_improvements():
         ],
     }
     return jsonify(suggestions)
+
+
+@app.route("/api/model-accuracy")
+def api_model_accuracy():
+    """
+    V2.1 Per-niche model accuracy over the last 7 days.
+
+    Returns edges found, haiku calls, bets placed and average confidence
+    for each niche that had any activity.
+    """
+    session = None
+    try:
+        from core.database import Signal
+        from sqlalchemy import func
+
+        session = get_session()
+        if not session:
+            return jsonify([])
+
+        since = datetime.utcnow() - timedelta(days=7)
+
+        niches = ['nba', 'f1', 'crypto', 'geopolitics', 'politics', 'golf', 'soccer', 'mma', 'other']
+        result = []
+
+        for niche in niches:
+            # Signals with edge found
+            total_edge = session.query(func.count(Signal.id)).filter(
+                Signal.niche == niche,
+                Signal.timestamp >= since,
+                Signal.funnel_step == 'math_edge',
+            ).scalar() or 0
+
+            # Signals that went to Haiku
+            haiku_calls = session.query(func.count(Signal.id)).filter(
+                Signal.niche == niche,
+                Signal.timestamp >= since,
+                Signal.haiku_called == True,
+            ).scalar() or 0
+
+            # Bets placed
+            bets = session.query(func.count(Signal.id)).filter(
+                Signal.niche == niche,
+                Signal.timestamp >= since,
+                Signal.was_bet_placed == True,
+            ).scalar() or 0
+
+            # Average confidence
+            avg_conf = session.query(func.avg(Signal.math_confidence)).filter(
+                Signal.niche == niche,
+                Signal.timestamp >= since,
+                Signal.math_confidence.isnot(None),
+            ).scalar() or 0
+
+            if total_edge > 0 or bets > 0:
+                result.append({
+                    'niche': niche,
+                    'edges_found': total_edge,
+                    'haiku_calls': haiku_calls,
+                    'bets': bets,
+                    'avg_confidence': round(float(avg_conf), 3),
+                })
+
+        return jsonify(result)
+
+    except Exception as exc:
+        logger.error("api_model_accuracy error: %s", exc)
+        return jsonify([])
+    finally:
+        _close_session(session)
 
 
 @app.route("/api/status")

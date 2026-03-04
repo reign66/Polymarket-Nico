@@ -40,12 +40,17 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
     stats = {
         'fetched': 0, 'filtered': 0, 'classified': 0, 'math_edge': 0,
         'haiku_called': 0, 'haiku_confirmed': 0, 'sonnet_called': 0, 'bets': 0,
+        'best_edge': 0.0, 'best_edge_niche': '',
     }
 
     try:
         # Step 1: Fetch active markets
         logger.info("=" * 50)
-        logger.info("CYCLE START")
+        from core.database import get_daily_api_calls, get_monthly_api_cost
+        daily_haiku = get_daily_api_calls(session, 'haiku')
+        daily_sonnet = get_daily_api_calls(session, 'sonnet')
+        monthly_cost = get_monthly_api_cost(session)
+        logger.info(f"CYCLE START | API today: {daily_haiku}H {daily_sonnet}S | Cost: ${monthly_cost:.4f}")
         markets = market_fetcher.fetch_active_markets()
         stats['fetched'] = len(markets)
         logger.info(f"Step 1 - Fetched: {len(markets)} markets")
@@ -66,7 +71,12 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
         # Step 3: Classify by niche
         classified, unclassified = niche_classifier.classify_batch(filtered)
         stats['classified'] = len(classified)
-        logger.info(f"Step 3 - Classified: {len(classified)} markets ({unclassified} unclassified)")
+        clf_stats = niche_classifier.get_stats_and_reset()
+        logger.info(
+            f"Step 3 - Classified: {len(classified)} markets ({unclassified} unclassified) | "
+            f"Classifier: {clf_stats['gamma']} tags | {clf_stats['cache']} cache | "
+            f"{clf_stats['haiku']} Haiku | {clf_stats['unknown']} unknown"
+        )
 
         # Step 4-7: Process each classified market through the funnel
         for market in classified:
@@ -84,6 +94,7 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
         exit_manager.check_positions()
 
         elapsed = time.time() - cycle_start
+        best_edge_str = f" | Best edge: {stats['best_edge']:.1%} ({stats['best_edge_niche']})" if stats['best_edge'] > 0 else ""
         logger.info(
             f"CYCLE COMPLETE in {elapsed:.1f}s | "
             f"Funnel: {stats['fetched']}"
@@ -93,6 +104,7 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
             f"→{stats['haiku_called']}"
             f"→{stats['sonnet_called']}"
             f"→{stats['bets']} bets"
+            f"{best_edge_str}"
         )
         logger.info("=" * 50)
 
@@ -115,7 +127,7 @@ def _process_market(market, config, session, math_models, edge_calculator,
     if not model:
         return
 
-    model_result = model.calculate_probability(market)
+    model_result = model.calculate_probability(market, external_data={'session': session})
     if model_result is None:
         record_signal(
             session,
@@ -135,9 +147,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
         market_id=market.market_id,
         market_question=market.question,
         niche=niche,
-        math_probability=model_result.probability,
-        math_confidence=model_result.confidence,
-        math_method=model_result.method,
+        math_probability=model_result.get('probability', 0.5),
+        math_confidence=model_result.get('confidence', 0.05),
+        math_method=model_result.get('method', 'unknown'),
         math_edge=edge_result.best_edge,
         funnel_step='math_edge' if edge_result.should_call_ai else 'classified',
         direction=edge_result.best_direction if edge_result.should_call_ai else None,
@@ -150,6 +162,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
         return
 
     stats['math_edge'] += 1
+    if edge_result.best_edge > stats.get('best_edge', 0):
+        stats['best_edge'] = edge_result.best_edge
+        stats['best_edge_niche'] = niche
     logger.info(
         f"[{niche.upper()}] Math edge found: {market.question[:60]} | "
         f"edge={edge_result.best_edge:.1%} dir={edge_result.best_direction}"
@@ -165,9 +180,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
             market_id=market.market_id,
             market_question=market.question,
             niche=niche,
-            math_probability=model_result.probability,
-            math_confidence=model_result.confidence,
-            math_method=model_result.method,
+            math_probability=model_result.get('probability', 0.5),
+            math_confidence=model_result.get('confidence', 0.05),
+            math_method=model_result.get('method', 'unknown'),
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=False,
@@ -189,9 +204,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
             market_id=market.market_id,
             market_question=market.question,
             niche=niche,
-            math_probability=model_result.probability,
-            math_confidence=model_result.confidence,
-            math_method=model_result.method,
+            math_probability=model_result.get('probability', 0.5),
+            math_confidence=model_result.get('confidence', 0.05),
+            math_method=model_result.get('method', 'unknown'),
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=True,
@@ -218,9 +233,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
             market_id=market.market_id,
             market_question=market.question,
             niche=niche,
-            math_probability=model_result.probability,
-            math_confidence=model_result.confidence,
-            math_method=model_result.method,
+            math_probability=model_result.get('probability', 0.5),
+            math_confidence=model_result.get('confidence', 0.05),
+            math_method=model_result.get('method', 'unknown'),
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=True,
@@ -247,9 +262,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
             market_id=market.market_id,
             market_question=market.question,
             niche=niche,
-            math_probability=model_result.probability,
-            math_confidence=model_result.confidence,
-            math_method=model_result.method,
+            math_probability=model_result.get('probability', 0.5),
+            math_confidence=model_result.get('confidence', 0.05),
+            math_method=model_result.get('method', 'unknown'),
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=True,
@@ -282,9 +297,9 @@ def _process_market(market, config, session, math_models, edge_calculator,
             market_id=market.market_id,
             market_question=market.question,
             niche=niche,
-            math_probability=model_result.probability,
-            math_confidence=model_result.confidence,
-            math_method=model_result.method,
+            math_probability=model_result.get('probability', 0.5),
+            math_confidence=model_result.get('confidence', 0.05),
+            math_method=model_result.get('method', 'unknown'),
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=True,
@@ -308,8 +323,8 @@ def _process_market(market, config, session, math_models, edge_calculator,
                 price=price,
                 amount=adj_amount,
                 math_edge=edge_result.best_edge,
-                method=model_result.method,
-                confidence_pct=model_result.confidence,
+                method=model_result.get('method', 'unknown'),
+                confidence_pct=model_result.get('confidence', 0.05),
                 haiku_reason=haiku_result.reason,
                 sonnet_confidence=sonnet_result.confidence,
                 sonnet_rationale=sonnet_result.rationale,
@@ -325,30 +340,17 @@ def _process_market(market, config, session, math_models, edge_calculator,
 
 
 def _load_math_models(config):
-    """Load all available math models, skipping missing ones gracefully."""
+    """Load all math models using the registry singleton."""
+    from core.math_models import get_model
+    niches = ['nba', 'f1', 'crypto', 'geopolitics', 'politics', 'golf', 'generic']
     math_models = {}
-
-    model_map = {
-        'nba':         ('core.math_models.elo_model',      'EloModel'),
-        'f1':          ('core.math_models.f1_model',       'F1Model'),
-        'crypto':      ('core.math_models.crypto_model',   'CryptoModel'),
-        'geopolitics': ('core.math_models.geo_model',      'GeoModel'),
-        'politics':    ('core.math_models.politics_model', 'PoliticsModel'),
-        'generic':     ('core.math_models.generic_model',  'GenericModel'),
-    }
-
-    for niche, (module_path, class_name) in model_map.items():
+    for niche in niches:
         try:
-            import importlib
-            module = importlib.import_module(module_path)
-            cls = getattr(module, class_name)
-            math_models[niche] = cls(config)
-            logger.info(f"Loaded math model: {niche} ({class_name})")
-        except ImportError:
-            logger.warning(f"Math model not found, skipping: {niche} ({module_path}.{class_name})")
+            model = get_model(niche)
+            math_models[niche] = model
+            logger.info(f"Loaded math model: {niche}")
         except Exception as e:
-            logger.error(f"Failed to load math model {niche}: {e}", exc_info=True)
-
+            logger.warning(f"Could not load model for {niche}: {e}")
     return math_models
 
 
@@ -414,7 +416,14 @@ def main():
 
     market_fetcher = MarketFetcher(session)
     mech_filter = MechanicalFilter(config, session)
-    niche_classifier = NicheClassifier(config)
+    # Init anthropic client for Haiku classification (optional)
+    try:
+        import anthropic
+        _anthropic_client = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
+    except Exception:
+        _anthropic_client = None
+
+    niche_classifier = NicheClassifier(config, session=session, anthropic_client=_anthropic_client)
     edge_calculator = EdgeCalculator(config)
     haiku_confirmer = HaikuConfirmer(config, session)
     sonnet_decider = SonnetDecider(config, session)
@@ -517,8 +526,8 @@ def main():
     # Cache cleanup every 6h
     def cleanup():
         try:
-            from core.database import cleanup_old_cache
-            cleanup_old_cache(session, hours=24)
+            from core.database import cleanup_db
+            cleanup_db(session)
         except Exception as e:
             logger.error(f"Cleanup error: {e}", exc_info=True)
 
