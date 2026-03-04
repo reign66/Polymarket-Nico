@@ -215,10 +215,13 @@ class NicheClassifier:
         classified = []
         unclassified = 0
         for market in markets:
-            # Convert MarketData to dict for classify()
-            if hasattr(market, '__dict__'):
-                market_dict = market.__dict__.copy()
+            # Use to_dict() to preserve camelCase keys (tags, groupSlugs, etc.)
+            if hasattr(market, 'to_dict'):
+                market_dict = market.to_dict()
                 market_dict['id'] = market.market_id
+            elif hasattr(market, '__dict__'):
+                market_dict = market.__dict__.copy()
+                market_dict['id'] = getattr(market, 'market_id', '')
             else:
                 market_dict = market
 
