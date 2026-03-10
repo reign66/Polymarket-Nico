@@ -84,7 +84,7 @@ class HaikuConfirmer:
         edge_pct = edge_result.best_edge * 100
 
         prompt = (
-            f"You are a prediction market analyst. Evaluate this edge opportunity.\n\n"
+            f"You are a pragmatic prediction market analyst. Evaluate this edge.\n\n"
             f"Market: {question}\n"
             f"Market price (YES): {yes_price:.2f}\n"
             f"Model probability: {model_result.get('probability', 0.5):.2f}\n"
@@ -92,9 +92,12 @@ class HaikuConfirmer:
             f"Model reasoning: {model_result.get('reasoning', '')}\n"
             f"Suggested direction: {direction}\n"
             f"Raw edge: +{edge_pct:.1f}%\n\n"
-            f"Is this edge real and worth investigating further?\n"
-            f"Reply with exactly: CONFIRM or DENY, then one sentence reason.\n"
-            f"Example: CONFIRM The model correctly identifies..."
+            f"CONFIRM if: edge is 3-30% and method is reasonable (Elo, GBM, momentum, base rate).\n"
+            f"DENY only if: edge >40% (likely model error), method is fundamentally wrong, "
+            f"or the model ignores obvious recent information.\n"
+            f"A modest edge (5-15%) from a data-driven method should generally be confirmed.\n\n"
+            f"Reply: CONFIRM or DENY, then one sentence.\n"
+            f"Example: CONFIRM Elo edge looks valid given team strength differential."
         )
 
         # Increment BEFORE the call so concurrent calls can't slip through

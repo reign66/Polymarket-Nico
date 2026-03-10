@@ -72,13 +72,13 @@ class CryptoModel(MathModel):
         if len(prices) >= 200:
             ma200 = np.mean(arr[-200:])
             if current > ma20 > ma50 > ma200:
-                return "strong_bull", 1.3
+                return "strong_bull", 1.10   # was 1.30 — too aggressive
             elif current < ma20 < ma50 < ma200:
-                return "strong_bear", 0.7
+                return "strong_bear", 0.90   # was 0.70
         if current > ma20 > ma50:
-            return "bull", 1.15
+            return "bull", 1.05              # was 1.15
         elif current < ma20 < ma50:
-            return "bear", 0.85
+            return "bear", 0.95             # was 0.85
         return "neutral", 1.0
 
     def _parse_target(self, text: str):
@@ -162,16 +162,26 @@ class CryptoModel(MathModel):
         prices = [p[1] for p in history['prices']]
         current = prices[-1]
 
-        # 5. GBM parameters
+        # 5. GBM parameters — blended drift (40% short-term, 60% long-term)
         log_returns = np.diff(np.log(prices))
         if len(log_returns) < 5:
             return self._fallback(market)
-        mu_daily = np.mean(log_returns)
+        mu_90d = np.mean(log_returns)
+        if len(log_returns) >= 30:
+            mu_30d = np.mean(log_returns[-30:])
+            mu_daily = 0.4 * mu_30d + 0.6 * mu_90d   # blend: more weight to long term
+        else:
+            mu_daily = mu_90d
         sigma_daily = max(np.std(log_returns), 0.001)
 
-        # 6. Regime adjustment
+        # 6. Regime adjustment (mild — regime adjusts, not multiplies)
         regime, regime_factor = self._detect_regime(prices)
         mu_adj = mu_daily * regime_factor
+
+        # Cap annual drift: no crypto reliably does >150%/year or <-80%/year
+        MAX_ANNUAL = 1.50 / 365
+        MIN_ANNUAL = -0.80 / 365
+        mu_adj = max(MIN_ANNUAL, min(MAX_ANNUAL, mu_adj))
 
         # 7. Fear & Greed
         fng = self._fetch_fear_greed()
@@ -214,6 +224,17 @@ class CryptoModel(MathModel):
         if fng_val is not None:
             confidence += 0.03
         confidence = min(confidence, 0.60)
+
+        # 11. Divergence sanity check — if model diverges >40% from market, something is off
+        market_price = market.yes_price if hasattr(market, 'yes_price') else market.get('yes_price', 0.5)
+        divergence = abs(prob - float(market_price))
+        if divergence > 0.40:
+            penalty = max(0.3, 1.0 - (divergence - 0.40) * 2)
+            confidence *= penalty
+            logger.info(
+                f"GBM high divergence {divergence:.0%} for '{question[:50]}' "
+                f"(model={prob:.0%} market={float(market_price):.0%}) → conf→{confidence:.0%}"
+            )
 
         return {
             'probability': prob,

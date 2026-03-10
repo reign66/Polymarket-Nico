@@ -43,10 +43,13 @@ class PoliticsModel(MathModel):
             prob = min(0.97, max(0.03, yes_price + incumbency_bonus))
             return {
                 'probability': prob,
-                'confidence': 0.18,
-                'method': 'politics_insufficient_data',
+                'confidence': 0.28,   # was 0.18 — higher so incumbency edge can trigger
+                'method': 'politics_base_rate',
                 'factors': {'data_points': len(history), 'incumbency_bonus': incumbency_bonus},
-                'reasoning': f'{len(history)} price points. Incumbency={incumbency_bonus:+.1%}.'
+                'reasoning': (
+                    f'No history. Incumbency={incumbency_bonus:+.1%}. '
+                    f'Prob={prob:.1%} vs market {yes_price:.1%}'
+                )
             }
 
         prices = [h['yes_price'] for h in history]

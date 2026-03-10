@@ -32,12 +32,31 @@ class GeoModel(MathModel):
                 logger.debug(f"Could not fetch price history for {market_id}: {e}")
 
         if len(history) < 10:
+            # Apply base-rate prior when no history yet
+            # Most geopolitical events don't resolve in the proposed timeframe
+            q_lower = (market.question if hasattr(market, 'question') else
+                       market.get('question', '')).lower()
+            prior_offset = 0.0
+            if any(kw in q_lower for kw in [
+                "ceasefire", "peace deal", "peace agreement", "peace treaty",
+                "resolve", "end the war", "withdrawal", "diplomacy"
+            ]):
+                # Very few ceasefires/peace deals happen on schedule → lean NO
+                prior_offset = -0.10
+            elif any(kw in q_lower for kw in ["war", "invasion", "conflict", "attack"]):
+                # Conflict escalation: lean slightly against resolution
+                prior_offset = -0.05
+
+            prob = float(np.clip(yes_price + prior_offset, 0.03, 0.97))
             return {
-                'probability': yes_price,
-                'confidence': 0.12,
-                'method': 'geo_insufficient_data',
-                'factors': {'data_points': len(history)},
-                'reasoning': f'{len(history)} price points. Need 10+ for momentum.'
+                'probability': prob,
+                'confidence': 0.25,
+                'method': 'geo_base_rate_prior',
+                'factors': {'data_points': len(history), 'prior_offset': prior_offset},
+                'reasoning': (
+                    f'No history yet. Base rate offset={prior_offset:+.0%}. '
+                    f'Prob={prob:.1%} vs market {yes_price:.1%}'
+                )
             }
 
         prices = [h['yes_price'] for h in history]

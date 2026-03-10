@@ -156,8 +156,8 @@ class EloModel(MathModel):
 
         adjustments1 = 0
         adjustments2 = 0
-        # Only 1 team found → comparing vs average, much less confident
-        confidence = 0.50 if team2 else 0.15
+        # 1 team vs average = weaker signal than a direct matchup
+        confidence = 0.50 if team2 else 0.30
 
         q_lower = question.lower()
         if "home" in q_lower or "at home" in q_lower:
@@ -173,7 +173,18 @@ class EloModel(MathModel):
 
         adj_elo1 = elo1 + adjustments1
         adj_elo2 = elo2 + adjustments2
+        # P(team1 wins a single game)
         prob = 1 / (1 + 10 ** ((adj_elo2 - adj_elo1) / 400))
+
+        # Adjust for multi-round playoff questions (team must win 2+ series)
+        is_multi_round = any(kw in q_lower for kw in [
+            "conference finals", "finals mvp", "nba finals",
+            "championship", "nba champion"
+        ])
+        if is_multi_round and not team2:
+            # Rough approximation: winning 2 rounds ≈ prob^2
+            prob = prob ** 2
+            confidence = max(0.20, confidence - 0.10)  # less confident about multi-round
 
         confidence = min(confidence, 0.75)
 
@@ -186,9 +197,11 @@ class EloModel(MathModel):
                 'elo1': round(elo1), 'elo2': round(elo2),
                 'adj1': adjustments1, 'adj2': adjustments2,
                 'injuries1': len(injuries1), 'injuries2': len(injuries2),
+                'multi_round': is_multi_round,
             },
             'reasoning': (
                 f'{team1}(Elo {adj_elo1:.0f}) vs {team2 or "avg"}(Elo {adj_elo2:.0f}). '
-                f'Prob={prob:.1%}. Injuries: {len(injuries1)} vs {len(injuries2)}.'
+                f'Prob={prob:.1%}{"(multi-round adj)" if is_multi_round else ""}. '
+                f'Injuries: {len(injuries1)} vs {len(injuries2)}.'
             )
         }
