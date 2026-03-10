@@ -5,6 +5,7 @@ Threshold lowered: 5% (was 12%).
 
 import os
 import logging
+import datetime
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ class HaikuConfirmer:
         self.limits = config.get('api_limits', {})
         self.filters = config.get('filters', {})
         self._client = None
+        # Hard in-memory daily counter — guards against DB race conditions
+        self._calls_today: int = 0
+        self._calls_date: datetime.date | None = None
+        self._api_disabled: bool = False
 
     def _get_client(self):
         if self._client is None:
@@ -43,16 +48,26 @@ class HaikuConfirmer:
 
     def confirm_edge(self, market, model_result: dict, edge_result) -> HaikuResult:
         """Confirm or deny an edge found by the math model."""
-        from core.database import get_daily_api_calls, record_api_call
+        from core.database import record_api_call
 
         max_calls = self.limits.get('max_haiku_calls_per_day', 30)
-        daily_calls = get_daily_api_calls(self.session, 'haiku')
 
-        if daily_calls >= max_calls:
+        # In-memory check (fast, no DB race condition)
+        if self._api_disabled:
             return HaikuResult(
                 confirmed=False,
                 adjusted_edge=edge_result.confidence_adjusted_edge,
-                reason=f"Daily Haiku limit reached ({daily_calls}/{max_calls})"
+                reason="Haiku API disabled (credit/auth error)"
+            )
+        today = datetime.date.today()
+        if self._calls_date != today:
+            self._calls_today = 0
+            self._calls_date = today
+        if self._calls_today >= max_calls:
+            return HaikuResult(
+                confirmed=False,
+                adjusted_edge=edge_result.confidence_adjusted_edge,
+                reason=f"Daily Haiku limit reached ({self._calls_today}/{max_calls})"
             )
 
         client = self._get_client()
@@ -82,6 +97,8 @@ class HaikuConfirmer:
             f"Example: CONFIRM The model correctly identifies..."
         )
 
+        # Increment BEFORE the call so concurrent calls can't slip through
+        self._calls_today += 1
         try:
             response = client.messages.create(
                 model="claude-haiku-4-5-20251001",
@@ -144,7 +161,14 @@ class HaikuConfirmer:
             )
 
         except Exception as e:
-            logger.error(f"Haiku API error: {e}", exc_info=True)
+            err_str = str(e).lower()
+            if any(x in err_str for x in ("credit", "balance", "402", "401", "insufficient")):
+                logger.warning(f"Haiku API disabled: {e}")
+                self._api_disabled = True
+            else:
+                logger.error(f"Haiku API error: {e}", exc_info=True)
+            # Don't charge the counter if the call failed
+            self._calls_today -= 1
             return HaikuResult(
                 confirmed=False,
                 adjusted_edge=edge_result.confidence_adjusted_edge,

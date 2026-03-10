@@ -10,6 +10,7 @@ Level 4  : Fallback → "generic" (never drops a market)
 
 import logging
 import datetime
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +80,14 @@ KEYWORD_MAP = {
         "election", "president", "congress", "senate", "democrat",
         "republican", "vote", "ballot", "trump", "biden", "harris",
         "white house", "supreme court", "governor", "midterm",
-        "polling", "polling average",
+        "polling", "polling average", "gubernatorial", "ballot measure",
+        "house speaker", "filibuster", "impeach",
     ],
     "geopolitics": [
         "war", "ceasefire", "sanction", "conflict", "nato", "ukraine",
         "russia", "israel", "gaza", "taiwan", "iran", "north korea",
         "united nations", "coup", "invasion", "missile",
+        "nobel", "peace prize", "un security", "diplomacy", "treaty",
     ],
     "golf": [
         "golf", "masters", "pga tour", "open championship", "augusta",
@@ -262,7 +265,7 @@ class NicheClassifier:
         return best_sport if best_score > 0 else "sports_other"
 
     def _classify_by_keywords(self, market: dict) -> str | None:
-        """Level 1.5: keyword matching on question + slug + description."""
+        """Level 1.5: keyword matching with word boundaries on question + slug + description."""
         question = market.get('question', '').lower()
         slug = market.get('slug', '').lower().replace('-', ' ')
         description = (market.get('description', '') or '').lower()
@@ -270,7 +273,11 @@ class NicheClassifier:
 
         best_niche, best_score = None, 0
         for niche, keywords in KEYWORD_MAP.items():
-            score = sum(1 for kw in keywords if kw in text)
+            score = 0
+            for kw in keywords:
+                # Use word boundary so "sol" does not match "resolution", etc.
+                if re.search(r'\b' + re.escape(kw) + r'\b', text):
+                    score += 1
             if score > best_score:
                 best_score, best_niche = score, niche
 

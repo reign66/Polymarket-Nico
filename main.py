@@ -5,7 +5,6 @@ import logging
 import time
 import threading
 import yaml
-from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment
@@ -20,26 +19,26 @@ logging.basicConfig(
 logger = logging.getLogger('main')
 
 
-def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
+def run_cycle(session, market_fetcher, mech_filter, niche_classifier,
               math_models, edge_calculator, haiku_confirmer, sonnet_decider,
               pm_client, position_sizer, risk_manager, exit_manager, telegram):
     """Main cycle: MATH FIRST, AI LAST.
 
     Funnel:
-    1. Fetch markets (Gamma API, free)
-    2. Mechanical filter (code, free)
-    3. Classify by niche (code, free)
-    4. Math scoring (code, free)
-    5. Haiku confirmation (rare API call)
-    6. Sonnet decision (very rare API call)
-    7. Execute bet
+    1. Fetch markets          (Gamma API, free)
+    2. Mechanical filter      (code, free)
+    3. Classify by niche      (code/keyword, free)
+    4. Math scoring ALL       (code, free)
+    5. Sort by edge desc      (pick best N for Haiku)
+    6. Haiku confirmation     (rare API call, ≤30/day)
+    7. Sonnet decision        (very rare, ≤5/day)
+    8. Execute bet
     """
-    from core.database import record_signal, get_capital
-
     cycle_start = time.time()
     stats = {
-        'fetched': 0, 'filtered': 0, 'classified': 0, 'math_edge': 0,
-        'haiku_called': 0, 'haiku_confirmed': 0, 'sonnet_called': 0, 'bets': 0,
+        'fetched': 0, 'filtered': 0, 'classified': 0,
+        'math_edge': 0, 'haiku_actual': 0, 'haiku_confirmed': 0,
+        'sonnet_called': 0, 'bets': 0,
         'best_edge': 0.0, 'best_edge_niche': '',
     }
 
@@ -69,41 +68,74 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
             return stats
 
         # Step 3: Classify by niche
-        classified, unclassified = niche_classifier.classify_batch(filtered)
+        classified, _ = niche_classifier.classify_batch(filtered)
         stats['classified'] = len(classified)
         clf_stats = niche_classifier.get_stats_and_reset()
         logger.info(
             f"Step 3 - Classified: {len(classified)} markets | "
-            f"Classifier: {clf_stats['gamma']} gamma | {clf_stats.get('keyword', 0)} kw | "
-            f"{clf_stats['cache']} cache | {clf_stats['haiku']} haiku | "
-            f"{clf_stats.get('generic', 0)} generic-fallback"
+            f"gamma={clf_stats['gamma']} kw={clf_stats.get('keyword', 0)} "
+            f"cache={clf_stats['cache']} haiku={clf_stats['haiku']} "
+            f"generic={clf_stats.get('generic', 0)}"
         )
 
-        # Step 4-7: Process each classified market through the funnel
+        # Step 4: Math scoring for ALL classified markets (zero API cost)
+        math_candidates = []
+        skipped_math = 0
         for market in classified:
             try:
-                _process_market(
-                    market, config, session, math_models, edge_calculator,
-                    haiku_confirmer, sonnet_decider, pm_client, position_sizer,
-                    risk_manager, telegram, stats,
+                model = math_models.get(market.niche) or math_models.get('generic')
+                if not model:
+                    continue
+                model_result = model.calculate_probability(market, external_data={'session': session})
+                if model_result is None:
+                    continue
+                edge_result = edge_calculator.calculate_edge(market, model_result)
+                if edge_result.should_call_ai:
+                    math_candidates.append((market, model_result, edge_result))
+                    if edge_result.best_edge > stats['best_edge']:
+                        stats['best_edge'] = edge_result.best_edge
+                        stats['best_edge_niche'] = market.niche
+                else:
+                    skipped_math += 1
+            except Exception as e:
+                logger.error(f"Math error {market.market_id[:8]}: {e}", exc_info=True)
+
+        stats['math_edge'] = len(math_candidates)
+
+        # Sort by confidence-adjusted edge DESCENDING so best edges get Haiku first
+        math_candidates.sort(key=lambda x: x[2].confidence_adjusted_edge, reverse=True)
+
+        best_str = f"{stats['best_edge']:.1%} ({stats['best_edge_niche']})" if stats['best_edge'] > 0 else "none"
+        logger.info(
+            f"Step 4 - Math: {len(math_candidates)} edges found "
+            f"(best={best_str}, skipped={skipped_math})"
+        )
+
+        # Steps 5-7: AI confirmation on top edges (sorted, limit enforced inside haiku_confirmer)
+        for market, model_result, edge_result in math_candidates:
+            try:
+                _process_with_ai(
+                    market, model_result, edge_result,
+                    session, haiku_confirmer, sonnet_decider,
+                    pm_client, position_sizer, risk_manager, telegram, stats,
                 )
             except Exception as e:
-                logger.error(f"Error processing market {market.market_id[:8]}: {e}", exc_info=True)
+                logger.error(f"AI error {market.market_id[:8]}: {e}", exc_info=True)
 
         # Step: Check exits
-        logger.info("Checking positions for exits...")
         exit_manager.check_positions()
 
         elapsed = time.time() - cycle_start
-        best_edge_str = f" | Best edge: {stats['best_edge']:.1%} ({stats['best_edge_niche']})" if stats['best_edge'] > 0 else ""
+        best_edge_str = f" | Best: {stats['best_edge']:.1%} ({stats['best_edge_niche']})" if stats['best_edge'] > 0 else ""
         logger.info(
             f"CYCLE COMPLETE in {elapsed:.1f}s | "
             f"Funnel: {stats['fetched']}"
             f"→{stats['filtered']}"
             f"→{stats['classified']}"
-            f"→{stats['math_edge']}"
-            f"→{stats['haiku_called']}"
-            f"→{stats['sonnet_called']}"
+            f"→{stats['math_edge']} edges"
+            f"→{stats['haiku_actual']} haiku"
+            f"→{stats['haiku_confirmed']} confirmed"
+            f"→{stats['sonnet_called']} sonnet"
             f"→{stats['bets']} bets"
             f"{best_edge_str}"
         )
@@ -115,65 +147,31 @@ def run_cycle(config, session, market_fetcher, mech_filter, niche_classifier,
     return stats
 
 
-def _process_market(market, config, session, math_models, edge_calculator,
-                    haiku_confirmer, sonnet_decider, pm_client, position_sizer,
-                    risk_manager, telegram, stats):
-    """Process a single market through the full pipeline."""
+def _process_with_ai(market, model_result, edge_result,
+                     session, haiku_confirmer, sonnet_decider,
+                     pm_client, position_sizer, risk_manager, telegram, stats):
+    """
+    Steps 5-7 for a single market: Haiku → Sonnet → execute.
+    Math scoring is already done; markets arrive sorted by edge (best first).
+    """
     from core.database import record_signal, get_capital
 
     niche = market.niche
 
-    # Step 4: Math model scoring
-    model = math_models.get(niche) or math_models.get('generic')
-    if not model:
-        return
-
-    model_result = model.calculate_probability(market, external_data={'session': session})
-    if model_result is None:
-        record_signal(
-            session,
-            market_id=market.market_id,
-            market_question=market.question,
-            niche=niche,
-            funnel_step='classified',
-            skip_reason='Model returned None',
-        )
-        return
-
-    # Step 4b: Calculate edge
-    edge_result = edge_calculator.calculate_edge(market, model_result)
-
-    record_signal(
-        session,
-        market_id=market.market_id,
-        market_question=market.question,
-        niche=niche,
-        math_probability=model_result.get('probability', 0.5),
-        math_confidence=model_result.get('confidence', 0.05),
-        math_method=model_result.get('method', 'unknown'),
-        math_edge=edge_result.best_edge,
-        funnel_step='math_edge' if edge_result.should_call_ai else 'classified',
-        direction=edge_result.best_direction if edge_result.should_call_ai else None,
-        skip_reason=None if edge_result.should_call_ai else (
-            f'Edge {edge_result.confidence_adjusted_edge:.1%} < {config["filters"]["min_math_edge"]}'
-        ),
-    )
-
-    if not edge_result.should_call_ai:
-        return
-
-    stats['math_edge'] += 1
-    if edge_result.best_edge > stats.get('best_edge', 0):
-        stats['best_edge'] = edge_result.best_edge
-        stats['best_edge_niche'] = niche
     logger.info(
-        f"[{niche.upper()}] Math edge found: {market.question[:60]} | "
-        f"edge={edge_result.best_edge:.1%} dir={edge_result.best_direction}"
+        f"[{niche.upper()}] Edge {edge_result.best_edge:.1%} "
+        f"(adj {edge_result.confidence_adjusted_edge:.1%}, conf {edge_result.model_confidence:.0%}) "
+        f"| {market.question[:60]}"
     )
 
     # Step 5: Haiku confirmation
     haiku_result = haiku_confirmer.confirm_edge(market, model_result, edge_result)
-    stats['haiku_called'] += 1
+
+    # Count only real API calls (not limit-skip returns)
+    if "limit reached" not in haiku_result.reason.lower() and "unavailable" not in haiku_result.reason.lower():
+        stats['haiku_actual'] += 1
+    else:
+        logger.info(f"Haiku SKIPPED ({haiku_result.reason}): {market.question[:50]}")
 
     if not haiku_result.confirmed:
         record_signal(
@@ -315,7 +313,6 @@ def _process_market(market, config, session, math_models, edge_calculator,
             funnel_step='bet',
         )
 
-        # Telegram notification
         if telegram:
             telegram.send_entry_notification(
                 niche=niche,
@@ -456,7 +453,7 @@ def main():
             logger.info("Cycle skipped (paused via dashboard)")
             return
         run_cycle(
-            config, session, market_fetcher, mech_filter, niche_classifier,
+            session, market_fetcher, mech_filter, niche_classifier,
             math_models, edge_calculator, haiku_confirmer, sonnet_decider,
             pm_client, position_sizer, risk_manager, exit_manager, telegram,
         )

@@ -144,7 +144,7 @@ class EloModel(MathModel):
         except Exception:
             return []
 
-    def calculate_probability(self, market, external_data=None) -> dict:
+    def calculate_probability(self, market, external_data=None) -> dict:  # noqa: ARG002
         question = market.question if hasattr(market, 'question') else market.get('question', '')
         team1, team2 = self._parse_matchup(question)
 
@@ -156,7 +156,8 @@ class EloModel(MathModel):
 
         adjustments1 = 0
         adjustments2 = 0
-        confidence = 0.50
+        # Only 1 team found → comparing vs average, much less confident
+        confidence = 0.50 if team2 else 0.15
 
         q_lower = question.lower()
         if "home" in q_lower or "at home" in q_lower:

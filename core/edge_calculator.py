@@ -122,13 +122,11 @@ class EdgeCalculator:
                 )
 
         question_short = question[:50] if question else ''
-        logger.info(
-            f"Edge calc [{market_id}] '{question_short}': "
-            f"model={model_prob:.0%} conf={model_confidence:.0%} | "
-            f"edge_yes={edge_yes:+.1%} edge_no={edge_no:+.1%} | "
-            f"adj_edge={confidence_adjusted_edge:.1%} | "
-            f"dir={best_direction} kelly={kelly:.3f} EV={ev:.3f} | "
-            f"call_ai={should_call_ai}"
+        logger.debug(
+            f"Edge [{market_id}] '{question_short}': "
+            f"model={model_prob:.0%} conf={model_confidence:.0%} "
+            f"edge_yes={edge_yes:+.1%} edge_no={edge_no:+.1%} "
+            f"adj={confidence_adjusted_edge:.1%} dir={best_direction} ai={should_call_ai}"
         )
 
         return EdgeResult(
