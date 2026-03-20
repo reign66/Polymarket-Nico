@@ -183,8 +183,17 @@ class CryptoModel(MathModel):
         MIN_ANNUAL = -0.80 / 365
         mu_adj = max(MIN_ANNUAL, min(MAX_ANNUAL, mu_adj))
 
-        # 7. Fear & Greed
+        # 7. Fear & Greed + GDELT macro news
         fng = self._fetch_fear_greed()
+        gdelt_boost = 0.0
+        gdelt_articles = 0
+        try:
+            from tools.news_fetcher import get_news_fetcher
+            sig = get_news_fetcher().get_news_signal('crypto', question)
+            gdelt_boost = sig.get('boost', 0.0)
+            gdelt_articles = sig.get('articles', 0)
+        except Exception:
+            pass
         fng_val = None
         if fng and len(fng) > 0:
             try:
@@ -213,7 +222,7 @@ class CryptoModel(MathModel):
             prob = 1 - prob
         prob = float(np.clip(prob, 0.02, 0.98))
 
-        # 10. Confidence
+        # 10. Confidence (includes GDELT macro news boost)
         confidence = 0.40
         if len(prices) >= 90:
             confidence += 0.05
@@ -223,7 +232,9 @@ class CryptoModel(MathModel):
             confidence += 0.05
         if fng_val is not None:
             confidence += 0.03
-        confidence = min(confidence, 0.60)
+        if gdelt_articles >= 3:
+            confidence += 0.05  # active macro news cycle
+        confidence = min(confidence, 0.65)
 
         # 11. Divergence sanity check — if model diverges >40% from market, something is off
         market_price = market.yes_price if hasattr(market, 'yes_price') else market.get('yes_price', 0.5)
