@@ -1,4 +1,4 @@
-"""Politics model: momentum + incumbency advantage."""
+"""Politics model: momentum + incumbency advantage + GDELT news."""
 
 import time
 import logging
@@ -22,6 +22,18 @@ class PoliticsModel(MathModel):
             yes_price = market.get('yes_price', 0.5)
             question = market.get('question', '')
 
+        # GDELT news signal
+        news_boost = 0.0
+        news_info = {}
+        try:
+            from tools.news_fetcher import get_news_fetcher
+            fetcher = get_news_fetcher()
+            signal = fetcher.get_news_signal('politics', question)
+            news_boost = signal.get('boost', 0.0)
+            news_info = {'articles': signal['articles'], 'tone': signal['tone']}
+        except Exception as e:
+            logger.debug(f"GDELT politics signal failed: {e}")
+
         # Incumbency advantage
         q_lower = question.lower()
         incumbency_bonus = 0.0
@@ -41,13 +53,17 @@ class PoliticsModel(MathModel):
 
         if len(history) < 10:
             prob = min(0.97, max(0.03, yes_price + incumbency_bonus))
+            base_conf = 0.28
+            if news_info.get('articles', 0) >= 3:
+                base_conf += 0.10  # active news cycle confirms signal
             return {
                 'probability': prob,
-                'confidence': 0.28,   # was 0.18 — higher so incumbency edge can trigger
-                'method': 'politics_base_rate',
-                'factors': {'data_points': len(history), 'incumbency_bonus': incumbency_bonus},
+                'confidence': min(base_conf, 0.45),
+                'method': 'politics_base_rate+GDELT',
+                'factors': {'data_points': len(history), 'incumbency_bonus': incumbency_bonus, **news_info},
                 'reasoning': (
                     f'No history. Incumbency={incumbency_bonus:+.1%}. '
+                    f'GDELT {news_info.get("articles",0)} articles tone={news_info.get("tone",0):.1f}. '
                     f'Prob={prob:.1%} vs market {yes_price:.1%}'
                 )
             }
@@ -55,7 +71,6 @@ class PoliticsModel(MathModel):
         prices = [h['yes_price'] for h in history]
         timestamps = [h['timestamp'] for h in history]
 
-        # 7-day momentum
         week_cutoff = time.time() - 7 * 86400
         week_prices = [p for t, p in zip(timestamps, prices) if t >= week_cutoff]
         if len(week_prices) >= 2:
@@ -77,20 +92,24 @@ class PoliticsModel(MathModel):
             confidence += 0.05
         if incumbency_bonus > 0:
             confidence += 0.03
-        confidence = min(confidence, 0.45)
+        if news_info.get('articles', 0) >= 3:
+            confidence += 0.08  # GDELT active news cycle
+        confidence = min(confidence, 0.55)
 
         return {
             'probability': prob,
             'confidence': confidence,
-            'method': f'politics_momentum({momentum:+.1%}/7d)',
+            'method': f'politics_momentum({momentum:+.1%}/7d)+GDELT',
             'factors': {
                 'momentum_7d': round(momentum, 4),
                 'vol': round(vol, 4),
                 'points': len(prices),
                 'incumbency': incumbency_bonus,
+                **news_info,
             },
             'reasoning': (
                 f'Momentum={momentum:+.1%}, incumbency={incumbency_bonus:+.1%}. '
+                f'GDELT {news_info.get("articles",0)} articles tone={news_info.get("tone",0):.1f}. '
                 f'Prob={prob:.1%} vs market {yes_price:.1%}'
             )
         }
