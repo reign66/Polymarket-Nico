@@ -57,10 +57,55 @@ class EloModel(MathModel):
         if os.path.exists(self.elo_file):
             try:
                 with open(self.elo_file) as f:
-                    return json.load(f)
+                    data = json.load(f)
+                # Validate: if all values are 1500, ratings not bootstrapped yet
+                if len(set(data.values())) > 1:
+                    return data
             except Exception:
                 pass
-        return {abbr: 1500 for abbr in set(NBA_TEAMS.values())}
+        # Bootstrap from BDL standings
+        return self._bootstrap_from_bdl()
+
+    def _bootstrap_from_bdl(self) -> dict:
+        """Fetch current season win% from BDL and convert to Elo ratings."""
+        try:
+            import requests as _req
+            r = _req.get(
+                "https://api.balldontlie.io/v1/standings",
+                params={"season": 2025},
+                timeout=10
+            )
+            if r.status_code == 200:
+                standings = r.json().get("data", [])
+                if standings:
+                    ratings = {}
+                    for s in standings:
+                        abbr = s.get("team", {}).get("abbreviation", "")
+                        wins = s.get("wins", 0)
+                        losses = s.get("losses", 1)
+                        win_pct = wins / max(wins + losses, 1)
+                        # Map win% to Elo: 0.200 → 1350, 0.600 → 1600, 0.800 → 1700
+                        elo = 1350 + win_pct * 450
+                        if abbr:
+                            ratings[abbr] = round(elo, 1)
+                    if ratings:
+                        os.makedirs(os.path.dirname(self.elo_file) or ".", exist_ok=True)
+                        with open(self.elo_file, "w") as f:
+                            json.dump(ratings, f, indent=2)
+                        logger.info(f"Elo bootstrapped from BDL standings: {len(ratings)} teams")
+                        return ratings
+        except Exception as e:
+            logger.warning(f"BDL standings bootstrap failed: {e}")
+
+        # Hard-coded fallback (2025-26 approximation)
+        return {
+            "CLE": 1650, "OKC": 1640, "BOS": 1620, "MEM": 1590, "HOU": 1580,
+            "GSW": 1560, "DEN": 1555, "NYK": 1545, "MIN": 1540, "LAC": 1530,
+            "MIL": 1525, "IND": 1520, "MIA": 1515, "PHX": 1510, "LAL": 1505,
+            "ATL": 1495, "SAC": 1490, "CHI": 1485, "POR": 1480, "NOP": 1475,
+            "TOR": 1465, "ORL": 1460, "BKN": 1450, "DAL": 1445, "DET": 1440,
+            "SAS": 1435, "UTA": 1420, "WAS": 1415, "CHA": 1410, "PHI": 1400,
+        }
 
     def _save_ratings(self):
         os.makedirs("data", exist_ok=True)
