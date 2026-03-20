@@ -573,6 +573,23 @@ def main():
         name='Daily KPIs',
     )
 
+    # Daily learning analysis at 23:50 UTC — Sonnet analyses the day and adjusts config
+    from tools.daily_learner import DailyLearner
+    daily_learner = DailyLearner(session=session, config=config, telegram=telegram)
+    def run_daily_learning():
+        try:
+            logger.info("DailyLearner: starting nightly analysis...")
+            result = daily_learner.run_daily_analysis()
+            logger.info(f"DailyLearner: verdict={result.get('verdict','?')} changes={result.get('config_changes',{})}")
+        except Exception as e:
+            logger.error(f"DailyLearner error: {e}", exc_info=True)
+    scheduler.add_job(
+        run_daily_learning,
+        CronTrigger(hour=23, minute=50),
+        id='daily_learning',
+        name='Daily Learning (Sonnet)',
+    )
+
     # Daily report at 00:00 UTC
     def daily_report():
         try:
