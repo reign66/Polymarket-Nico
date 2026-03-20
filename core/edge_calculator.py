@@ -123,7 +123,7 @@ class EdgeCalculator:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 10% AND conf={model_confidence:.0%} >= 25%"
             # Quinary: RF entry condition — market_price <= model_prob * 0.50 (2x undervalued)
-            elif model_result_method and 'RandomForest' in model_result_method and best_edge >= 0.20:
+            elif model_result_method and 'RandomForest' in model_result_method and best_edge >= 0.13:
                 should_call_ai = True
                 reason = f"RF: market={yes_price:.1%} <= prob*0.5 | edge={best_edge:.1%}"
             else:
