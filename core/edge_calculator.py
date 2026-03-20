@@ -107,19 +107,19 @@ class EdgeCalculator:
             reason = f"EV={ev:.3f} <= 0"
         else:
             # Primary: strong adjusted edge
-            if confidence_adjusted_edge >= 0.06:
+            if confidence_adjusted_edge >= 0.04:
                 should_call_ai = True
-                reason = f"adj_edge={confidence_adjusted_edge:.1%} >= 6%"
+                reason = f"adj_edge={confidence_adjusted_edge:.1%} >= 4%"
             # Secondary: small edge + HIGH confidence
-            elif best_edge >= 0.03 and model_confidence >= 0.60:
+            elif best_edge >= 0.02 and model_confidence >= 0.50:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 3% AND conf={model_confidence:.0%} >= 60%"
             # Tertiary: medium edge + medium confidence
-            elif best_edge >= 0.05 and model_confidence >= 0.45:
+            elif best_edge >= 0.03 and model_confidence >= 0.35:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 5% AND conf={model_confidence:.0%} >= 45%"
             # Quaternary: high edge + moderate confidence (fixes generic/geo/fallback models)
-            elif best_edge >= 0.10 and model_confidence >= 0.25:
+            elif best_edge >= 0.07 and model_confidence >= 0.20:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 10% AND conf={model_confidence:.0%} >= 25%"
             # Quinary: RF entry condition — market_price <= model_prob * 0.50 (2x undervalued)
