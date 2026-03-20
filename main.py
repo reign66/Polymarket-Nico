@@ -54,6 +54,42 @@ def run_cycle(session, market_fetcher, mech_filter, niche_classifier,
         stats['fetched'] = len(markets)
         logger.info(f"Step 1 - Fetched: {len(markets)} markets")
 
+        # Step 1b: Scan failles structurelles (imminent resolution + low volume)
+        try:
+            from tools.opportunity_scanner import get_opportunity_scanner
+            opps = get_opportunity_scanner().get_all_opportunities()
+            imminent = opps.get("imminent_resolution", [])
+            low_vol = opps.get("low_volume_mispriced", [])
+            if imminent or low_vol:
+                logger.info(
+                    f"FAILLES: {len(imminent)} résolutions imminentes, {len(low_vol)} marchés sous-tradés"
+                )
+                # Injecter les meilleures failles dans le pipeline comme marchés prioritaires
+                from core.market_fetcher import MarketData
+                import json as _json
+                for opp in (imminent[:5] + low_vol[:5]):
+                    mid = opp.get("market_id", "")
+                    if not mid or any(m.market_id == mid for m in markets):
+                        continue
+                    try:
+                        yes_p = float(opp.get("yes_price", 0.5))
+                        md = MarketData(
+                            market_id=mid,
+                            question=opp.get("question", ""),
+                            yes_price=yes_p,
+                            no_price=float(opp.get("no_price", 1 - yes_p)),
+                            volume=float(opp.get("volume", 0)),
+                            liquidity=float(opp.get("liquidity", 0)),
+                            end_date=opp.get("end_date", ""),
+                        )
+                        md.niche = "generic"
+                        markets.append(md)
+                        logger.info(f"FAILLE injectée: [{opp['type']}] {opp['question'][:60]} (edge={opp.get('edge_yes', opp.get('spread', 0)):.1%})")
+                    except Exception as e:
+                        logger.debug(f"Faille injection error: {e}")
+        except Exception as e:
+            logger.debug(f"OpportunityScanner error: {e}")
+
         if not markets:
             logger.info("No markets fetched, ending cycle")
             return stats
