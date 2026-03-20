@@ -587,17 +587,7 @@ def main():
     else:
         logger.info("Dashboard not started (app not available)")
 
-    # Startup Telegram notification
-    api_limits = config.get('api_limits', {})
-    telegram._send(
-        f"POLYMARKET BOT V2 DEMARRE\n"
-        f"Mode: {'PAPER' if paper else 'LIVE'}\n"
-        f"Cycle: {cycle_minutes}min\n"
-        f"Modeles: {', '.join(math_models.keys())}\n"
-        f"Capital: {os.environ.get('CAPITAL_INITIAL', 1000)}€\n"
-        f"API max: {api_limits.get('max_haiku_calls_per_day', '?')}H"
-        f"/{api_limits.get('max_sonnet_calls_per_day', '?')}S par jour"
-    )
+    # Startup Telegram notification disabled — positions only
 
     # Run first cycle immediately on startup
     logger.info("Running initial cycle...")
