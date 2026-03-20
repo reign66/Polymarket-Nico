@@ -6,20 +6,8 @@ logger = logging.getLogger(__name__)
 
 _models = {}
 
-# RF niches — all share one singleton instance
-RF_NICHES = {'generic', 'sports_other', 'entertainment', 'tech', 'science', 'other'}
-
-
 def get_model(niche: str):
     """Get or create a math model for the given niche."""
-    # All RF niches share one singleton to avoid re-training
-    if niche in RF_NICHES:
-        if 'rf_singleton' in _models:
-            return _models['rf_singleton']
-        from core.math_models.rf_model import get_rf_model
-        instance = get_rf_model()
-        _models['rf_singleton'] = instance
-        return instance
     if niche in _models:
         return _models[niche]
 
