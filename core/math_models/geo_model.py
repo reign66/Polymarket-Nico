@@ -24,16 +24,12 @@ class GeoModel(MathModel):
         if market_id:
             try:
                 from core.database import get_price_history
-                # Note: session not available here; this will be handled by caller
-                # passing external_data with session
                 if external_data and 'session' in external_data:
                     history = get_price_history(external_data['session'], market_id, days=14)
             except Exception as e:
                 logger.debug(f"Could not fetch price history for {market_id}: {e}")
 
         if len(history) < 10:
-            # Apply base-rate prior when no history yet
-            # Most geopolitical events don't resolve in the proposed timeframe
             q_lower = (market.question if hasattr(market, 'question') else
                        market.get('question', '')).lower()
             prior_offset = 0.0
@@ -41,16 +37,14 @@ class GeoModel(MathModel):
                 "ceasefire", "peace deal", "peace agreement", "peace treaty",
                 "resolve", "end the war", "withdrawal", "diplomacy"
             ]):
-                # Very few ceasefires/peace deals happen on schedule → lean NO
                 prior_offset = -0.10
             elif any(kw in q_lower for kw in ["war", "invasion", "conflict", "attack"]):
-                # Conflict escalation: lean slightly against resolution
                 prior_offset = -0.05
 
             prob = float(np.clip(yes_price + prior_offset, 0.03, 0.97))
             return {
                 'probability': prob,
-                'confidence': 0.25,
+                'confidence': 0.35,  # raised from 0.25 — allows edge_calculator quaternary to trigger
                 'method': 'geo_base_rate_prior',
                 'factors': {'data_points': len(history), 'prior_offset': prior_offset},
                 'reasoning': (
@@ -75,14 +69,14 @@ class GeoModel(MathModel):
         prob = yes_price + (momentum * 0.25)
         prob = max(0.03, min(0.97, prob))
 
-        confidence = 0.15
+        confidence = 0.20
         if abs(momentum) > 0.10:
-            confidence += 0.08
+            confidence += 0.10
         if abs(momentum) > 0.20:
-            confidence += 0.07
+            confidence += 0.10
         if vol > 0.05:
             confidence += 0.05
-        confidence = min(confidence, 0.40)
+        confidence = min(confidence, 0.50)  # raised from 0.40
 
         return {
             'probability': prob,
