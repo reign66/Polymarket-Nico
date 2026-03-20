@@ -84,7 +84,7 @@ class HaikuConfirmer:
         edge_pct = edge_result.best_edge * 100
 
         prompt = (
-            f"You are a pragmatic prediction market analyst. Evaluate this edge.\n\n"
+            f"You are a pragmatic prediction market analyst. Evaluate this trading edge.\n\n"
             f"Market: {question}\n"
             f"Market price (YES): {yes_price:.2f}\n"
             f"Model probability: {model_result.get('probability', 0.5):.2f}\n"
@@ -92,11 +92,16 @@ class HaikuConfirmer:
             f"Model reasoning: {model_result.get('reasoning', '')}\n"
             f"Suggested direction: {direction}\n"
             f"Raw edge: +{edge_pct:.1f}%\n\n"
-            f"CONFIRM if: edge is 3-45% and method is data-driven (Elo, GBM, momentum, base rate, geo prior).\n"
-            f"DENY only if: edge >50% (likely model error) OR model probability is extreme (<2% or >98%) without justification.\n"
-            f"A modest edge (5-25%) from a specialized model (Elo, GBM) should always be confirmed.\n\n"
+            f"DECISION RULES:\n"
+            f"1. If method contains 'Elo': CONFIRM edges up to 60%. Elo models can legitimately diverge from market by 30-50% on misvalued teams.\n"
+            f"2. If method contains 'GBM' or 'crypto': CONFIRM edges up to 45%.\n"
+            f"3. If method contains 'momentum' or 'geo' or 'politics': CONFIRM edges 3-40%.\n"
+            f"4. If method contains 'generic_market_price' or 'generic_momentum': CONFIRM edges 3-30% only.\n"
+            f"5. DENY if: method is fundamentally wrong for market type (e.g. Elo on crypto).\n"
+            f"6. DENY if: model probability is <1% or >99% without clear reasoning.\n\n"
+            f"When in doubt for specialized methods (Elo, GBM), CONFIRM. A large edge can be real.\n\n"
             f"Reply: CONFIRM or DENY, then one sentence.\n"
-            f"Example: CONFIRM Elo edge is valid given team strength differential."
+            f"Example: CONFIRM Elo model shows team significantly undervalued by market."
         )
 
         # Increment BEFORE the call so concurrent calls can't slip through
