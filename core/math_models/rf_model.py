@@ -333,11 +333,11 @@ class RFModel(MathModel):
         }
 
 
-# Singleton
-_rf = None
+# Module-level singleton — one instance per process, shared across all niches
+_rf_instance: RFModel | None = None
 
 def get_rf_model() -> RFModel:
-    global _rf
-    if _rf is None:
-        _rf = RFModel()
-    return _rf
+    global _rf_instance
+    if _rf_instance is None:
+        _rf_instance = RFModel()
+    return _rf_instance
