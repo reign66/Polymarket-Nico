@@ -100,3 +100,5 @@ railway domain  # URL du dashboard
 - Kelly fraction 0.25, cap 5% du capital par bet
 - Take-profit +20%, stop-loss -15%
 - API budget: max 5 EUR/mois
+
+<!-- deploy: 2026-03-20T12:14:08.586009 -->
