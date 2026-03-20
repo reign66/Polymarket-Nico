@@ -1,7 +1,7 @@
 cycle_interval_minutes: 30
 api_limits:
-  max_haiku_calls_per_day: 80
-  max_haiku_classify_per_day: 25
+  max_haiku_calls_per_day: 100
+  max_haiku_classify_per_day: 0
   max_sonnet_calls_per_day: 10
   max_monthly_cost_eur: 5
 filters:
