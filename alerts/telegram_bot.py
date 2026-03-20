@@ -108,6 +108,7 @@ class TelegramAlerter:
         return self._send(text)
 
     def send_circuit_breaker_alert(self, reason: str) -> bool:
+        return False  # disabled — positions only
         text = (
             f"<b>CIRCUIT BREAKER ACTIVE</b>\n"
             f"{reason}"
@@ -115,6 +116,7 @@ class TelegramAlerter:
         return self._send(text)
 
     def send_near_resolution_alert(self, position, hours_left: float) -> bool:
+        return False  # disabled — positions only
         niche = getattr(position, 'bot_niche', 'N/A')
         question = getattr(position, 'market_question', 'N/A')
         direction = getattr(position, 'direction', 'N/A')
@@ -138,6 +140,7 @@ class TelegramAlerter:
         return self._send(text)
 
     def send_daily_report(self, stats: dict) -> bool:
+        return False  # disabled — positions only
         date_str = stats.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
         pnl = stats.get('pnl_day', 0.0)
         capital = stats.get('capital', 0.0)
@@ -196,6 +199,7 @@ class TelegramAlerter:
         return self._send(text)
 
     def send_weekly_report(self, stats: dict) -> bool:
+        return False  # disabled — positions only
         date_str = stats.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
         pnl = stats.get('pnl_day', 0.0)
         capital = stats.get('capital', 0.0)
