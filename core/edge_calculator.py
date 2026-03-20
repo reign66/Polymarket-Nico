@@ -46,6 +46,7 @@ class EdgeCalculator:
 
         model_prob = model_result.get('probability', 0.5)
         model_confidence = model_result.get('confidence', 0.05)
+        model_result_method = model_result.get('method', '')
 
         # Raw edges
         edge_yes = model_prob - yes_price
@@ -121,6 +122,10 @@ class EdgeCalculator:
             elif best_edge >= 0.10 and model_confidence >= 0.25:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 10% AND conf={model_confidence:.0%} >= 25%"
+            # Quinary: RF entry condition — market_price <= model_prob * 0.50 (2x undervalued)
+            elif model_result_method and 'RandomForest' in model_result_method and best_edge >= 0.20:
+                should_call_ai = True
+                reason = f"RF: market={yes_price:.1%} <= prob*0.5 | edge={best_edge:.1%}"
             else:
                 reason = (
                     f"adj_edge={confidence_adjusted_edge:.1%} too low "
