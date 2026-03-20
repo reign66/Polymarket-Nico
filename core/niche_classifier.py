@@ -303,11 +303,8 @@ class NicheClassifier:
             pass
 
     def _classify_by_haiku(self, market: dict, market_id: str) -> str | None:
-        """Level 3: Haiku API call with hard in-memory daily limit."""
-        if not self.anthropic_client:
-            return None
-        if self._api_disabled:
-            return None
+        """Level 3: Haiku classify DISABLED — quota reserved for bet confirmation."""
+        return None  # Always skip, use keyword fallback instead
 
         # Reset counter at midnight
         today = datetime.date.today()
