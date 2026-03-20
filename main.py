@@ -213,56 +213,25 @@ def _process_with_ai(market, model_result, edge_result,
     use_sonnet = False
     skip_reason = ""
 
-    if best_edge >= DIRECT_BET_EDGE and conf >= DIRECT_BET_CONF:
-        # Direct bet — math est suffisamment confiant
-        logger.info(f"MATH DIRECT BET [{niche.upper()}]: edge={best_edge:.1%} conf={conf:.0%} — no AI needed")
-        stats['haiku_confirmed'] += 1  # count as confirmed
-        # Create a synthetic sonnet result
+    # FULL MATH MODE — no AI at all
+    FULL_MATH_EDGE = 0.04   # bet direct si edge >= 4%
+    FULL_MATH_CONF = 0.25   # conf >= 25%
+
+    if best_edge >= FULL_MATH_EDGE and conf >= FULL_MATH_CONF:
+        logger.info(f"FULL MATH BET [{niche.upper()}]: edge={best_edge:.1%} conf={conf:.0%} — pure math")
+        stats['haiku_confirmed'] += 1
         from core.sonnet_decider import SonnetResult
         sonnet_result = SonnetResult(
             go=True,
             direction=edge_result.best_direction,
             confidence='HIGH' if conf >= 0.50 else 'MEDIUM',
             edge_estimate=best_edge,
-            rationale=f"Math direct: {model_result.get('method','?')} edge={best_edge:.1%} conf={conf:.0%}",
-            risk="Math model risk"
+            rationale=f"Full math: {model_result.get('method','?')} edge={best_edge:.1%} conf={conf:.0%}",
+            risk="Math model risk only"
         )
         stats['sonnet_called'] += 1
-    elif best_edge >= SONNET_MIN_EDGE:
-        # Edge modéré → Sonnet tranche
-        use_sonnet = True
-        from dataclasses import dataclass
-        @dataclass
-        class FakeHaikuResult:
-            confirmed: bool = True
-            adjusted_edge: float = 0.0
-            reason: str = "math_bypass"
-            tokens_used: int = 0
-        fake_haiku = FakeHaikuResult(confirmed=True, adjusted_edge=adj_edge)
-        sonnet_result = sonnet_decider.decide_bet(market, model_result, edge_result, fake_haiku)
-        stats['sonnet_called'] += 1
-        if not sonnet_result.go:
-            record_signal(
-                session,
-                market_id=market.market_id,
-                market_question=market.question,
-                niche=niche,
-                math_probability=model_result.get('probability', 0.5),
-                math_confidence=conf,
-                math_method=model_result.get('method', 'unknown'),
-                math_edge=best_edge,
-                haiku_called=False,
-                haiku_confirmed=True,
-                sonnet_called=True,
-                sonnet_go=False,
-                sonnet_direction=sonnet_result.direction,
-                sonnet_confidence=sonnet_result.confidence,
-                funnel_step='sonnet',
-                skip_reason=f'Sonnet: {sonnet_result.rationale}',
-            )
-            return
     else:
-        skip_reason = f"Edge {best_edge:.1%} < {SONNET_MIN_EDGE:.0%} minimum"
+        skip_reason = f"Edge {best_edge:.1%} < 4% or conf {conf:.0%} < 25%"
         record_signal(
             session,
             market_id=market.market_id,
