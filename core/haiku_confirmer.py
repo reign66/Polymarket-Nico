@@ -84,7 +84,7 @@ class HaikuConfirmer:
         edge_pct = edge_result.best_edge * 100
 
         prompt = (
-            f"You are a pragmatic prediction market analyst. Approve or reject this trading edge.\n\n"
+            f"You are a pragmatic prediction market analyst. Evaluate this edge.\n\n"
             f"Market: {question}\n"
             f"Market price (YES): {yes_price:.2f}\n"
             f"Model probability: {model_result.get('probability', 0.5):.2f}\n"
@@ -92,14 +92,11 @@ class HaikuConfirmer:
             f"Model reasoning: {model_result.get('reasoning', '')}\n"
             f"Suggested direction: {direction}\n"
             f"Raw edge: +{edge_pct:.1f}%\n\n"
-            f"RULES:\n"
-            f"- CONFIRM if the method is data-driven (Elo, GBM, momentum, RF, base rate, stats)\n"
-            f"- CONFIRM if edge is between 2% and 50%\n"
-            f"- DENY only if: edge >55% (extreme model error) OR method is pure guessing\n"
-            f"- A large edge (15-45%) from RF or momentum is NORMAL — do not penalize it\n"
-            f"- When in doubt, CONFIRM. False negatives cost money.\n\n"
+            f"CONFIRM if: edge is 3-45% and method is data-driven (Elo, GBM, momentum, base rate, geo prior).\n"
+            f"DENY only if: edge >50% (likely model error) OR model probability is extreme (<2% or >98%) without justification.\n"
+            f"A modest edge (5-25%) from a specialized model (Elo, GBM) should always be confirmed.\n\n"
             f"Reply: CONFIRM or DENY, then one sentence.\n"
-            f"Example: CONFIRM Momentum edge is valid given recent price movement."
+            f"Example: CONFIRM Elo edge is valid given team strength differential."
         )
 
         # Increment BEFORE the call so concurrent calls can't slip through
