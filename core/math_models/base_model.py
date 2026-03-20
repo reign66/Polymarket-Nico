@@ -20,7 +20,11 @@ class MathModel:
         raise NotImplementedError
 
     def _fallback(self, market) -> dict:
-        """Fallback when model cannot calculate."""
+        """Fallback when model cannot calculate.
+
+        confidence=0.20 so quaternary edge_calculator condition (edge>=10% AND conf>=0.20)
+        can still trigger AI on very high-edge markets.
+        """
         yes_price = 0.5
         if hasattr(market, 'yes_price'):
             yes_price = market.yes_price
@@ -28,7 +32,7 @@ class MathModel:
             yes_price = market.get('yes_price', 0.5)
         return {
             'probability': yes_price,
-            'confidence': 0.05,
+            'confidence': 0.20,
             'method': 'fallback_market_price',
             'factors': {},
             'reasoning': 'Model could not process this market. Using market price as estimate.'
