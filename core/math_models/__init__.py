@@ -19,6 +19,13 @@ def get_model(niche: str):
         'geopolitics': ('core.math_models.geo_model', 'GeoModel'),
         'politics': ('core.math_models.politics_model', 'PoliticsModel'),
         'golf': ('core.math_models.golf_model', 'GolfModel'),
+        # RF is the generic fallback — works for all niches without prior data
+        'generic': ('core.math_models.rf_model', 'RFModel'),
+        'sports_other': ('core.math_models.rf_model', 'RFModel'),
+        'entertainment': ('core.math_models.rf_model', 'RFModel'),
+        'tech': ('core.math_models.rf_model', 'RFModel'),
+        'science': ('core.math_models.rf_model', 'RFModel'),
+        'other': ('core.math_models.rf_model', 'RFModel'),
     }
 
     module_path, class_name = MODEL_MAP.get(niche, ('core.math_models.generic_model', 'GenericModel'))
