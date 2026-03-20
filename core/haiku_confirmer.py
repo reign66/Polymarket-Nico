@@ -84,7 +84,7 @@ class HaikuConfirmer:
         edge_pct = edge_result.best_edge * 100
 
         prompt = (
-            f"You are a pragmatic prediction market analyst. Evaluate this edge.\n\n"
+            f"You are a pragmatic prediction market analyst. Approve or reject this trading edge.\n\n"
             f"Market: {question}\n"
             f"Market price (YES): {yes_price:.2f}\n"
             f"Model probability: {model_result.get('probability', 0.5):.2f}\n"
@@ -92,15 +92,14 @@ class HaikuConfirmer:
             f"Model reasoning: {model_result.get('reasoning', '')}\n"
             f"Suggested direction: {direction}\n"
             f"Raw edge: +{edge_pct:.1f}%\n\n"
-            f"CONFIRM if:\n"
-            f"  - Edge is 2-40% from any data-driven method (Elo, GBM, momentum, RF, base rate)\n"
-            f"  - The method is not obviously wrong for this market type\n"
-            f"DENY only if:\n"
-            f"  - Edge >50% (very likely model error)\n"
-            f"  - Method is fundamentally inappropriate (ex: Elo on crypto)\n"
-            f"A modest edge of 3-20% from a systematic method should almost always be CONFIRMED.\n\n"
+            f"RULES:\n"
+            f"- CONFIRM if the method is data-driven (Elo, GBM, momentum, RF, base rate, stats)\n"
+            f"- CONFIRM if edge is between 2% and 50%\n"
+            f"- DENY only if: edge >55% (extreme model error) OR method is pure guessing\n"
+            f"- A large edge (15-45%) from RF or momentum is NORMAL — do not penalize it\n"
+            f"- When in doubt, CONFIRM. False negatives cost money.\n\n"
             f"Reply: CONFIRM or DENY, then one sentence.\n"
-            f"Example: CONFIRM Elo edge looks valid given team strength differential."
+            f"Example: CONFIRM Momentum edge is valid given recent price movement."
         )
 
         # Increment BEFORE the call so concurrent calls can't slip through
@@ -131,7 +130,7 @@ class HaikuConfirmer:
             reason = text[7:].strip() if confirmed else text[5:].strip()
 
             # V2.1: threshold lowered to 5% (was 12%)
-            min_confirmed_edge = self.filters.get('min_confirmed_edge', 0.05)
+            min_confirmed_edge = self.filters.get('min_confirmed_edge', 0.02)
             adj_edge = edge_result.confidence_adjusted_edge
 
             if confirmed and adj_edge < min_confirmed_edge:
