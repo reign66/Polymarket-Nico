@@ -1,5 +1,9 @@
 """
-core/edge_calculator.py — V2.1 Edge calculator with adaptive thresholds.
+core/edge_calculator.py — V2.2 Edge calculator with adaptive thresholds.
+
+Changelog V2.2:
+- Added quaternary condition: edge >= 10% AND conf >= 0.25
+  Fixes models with moderate confidence (generic, geo, fallback) never triggering AI.
 """
 
 import logging
@@ -33,7 +37,6 @@ class EdgeCalculator:
     def calculate_edge(self, market, model_result: dict) -> EdgeResult:
         """
         Calculate edge and Kelly criterion for a market.
-
         model_result dict must have: probability, confidence, method
         """
         market_id = market.market_id if hasattr(market, 'market_id') else str(market.get('id', ''))
@@ -77,7 +80,6 @@ class EdgeCalculator:
         confidence_adjusted_edge = best_edge * weight
 
         # Kelly criterion: f* = (p*odds - (1-p)) / odds
-        # odds = 1/price
         kelly = 0.0
         if price > 0 and best_direction != 'SKIP':
             p = model_prob if best_direction == 'YES' else (1 - model_prob)
@@ -93,7 +95,7 @@ class EdgeCalculator:
         elif best_direction == 'NO':
             ev = (1 - model_prob) * (1.0 - no_price) - model_prob * no_price
 
-        # Adaptive AI trigger: multiple criteria
+        # Adaptive AI trigger — 4 conditions (OR logic)
         should_call_ai = False
         reason = ""
         if best_direction == 'SKIP':
@@ -103,11 +105,11 @@ class EdgeCalculator:
         elif ev <= 0:
             reason = f"EV={ev:.3f} <= 0"
         else:
-            # Primary criterion: adjusted edge
+            # Primary: strong adjusted edge
             if confidence_adjusted_edge >= 0.06:
                 should_call_ai = True
                 reason = f"adj_edge={confidence_adjusted_edge:.1%} >= 6%"
-            # Secondary: small edge but HIGH confidence
+            # Secondary: small edge + HIGH confidence
             elif best_edge >= 0.03 and model_confidence >= 0.60:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 3% AND conf={model_confidence:.0%} >= 60%"
@@ -115,6 +117,10 @@ class EdgeCalculator:
             elif best_edge >= 0.05 and model_confidence >= 0.45:
                 should_call_ai = True
                 reason = f"edge={best_edge:.1%} >= 5% AND conf={model_confidence:.0%} >= 45%"
+            # Quaternary: high edge + moderate confidence (fixes generic/geo/fallback models)
+            elif best_edge >= 0.10 and model_confidence >= 0.25:
+                should_call_ai = True
+                reason = f"edge={best_edge:.1%} >= 10% AND conf={model_confidence:.0%} >= 25%"
             else:
                 reason = (
                     f"adj_edge={confidence_adjusted_edge:.1%} too low "
