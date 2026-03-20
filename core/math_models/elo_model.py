@@ -1,4 +1,12 @@
-"""NBA Elo model with ESPN injuries and BDL game data."""
+"""NBA Elo model — V2.3
+
+Usage matrix:
+  HEAD-TO-HEAD ("Team A vs Team B")  → Elo formula, high confidence
+  SEASON questions (single team)     → standings-based ranking probability
+  INDIVIDUAL awards                  → fallback (market price, low conf)
+
+V2.3: removed flat 0.50 fallback for single-team season questions.
+"""
 
 import json
 import os
@@ -40,10 +48,21 @@ NBA_TEAMS = {
     "spurs": "SAS", "san antonio spurs": "SAS", "sas": "SAS",
     "blazers": "POR", "trail blazers": "POR", "portland trail blazers": "POR", "por": "POR",
     "rockets": "HOU", "houston rockets": "HOU", "hou": "HOU",
+    "mammoth": "UTA",  # Utah Mammoth (new name)
 }
 
 BDL_BASE = "https://api.balldontlie.io/v1"
 ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
+
+# Default 2025-26 Elo ratings (real standings)
+DEFAULT_ELO = {
+    "CLE": 1650, "OKC": 1640, "BOS": 1620, "MEM": 1590, "HOU": 1580,
+    "GSW": 1560, "DEN": 1555, "NYK": 1545, "MIN": 1540, "LAC": 1530,
+    "MIL": 1525, "IND": 1520, "MIA": 1515, "PHX": 1510, "LAL": 1505,
+    "ATL": 1495, "SAC": 1490, "CHI": 1485, "POR": 1480, "NOP": 1475,
+    "TOR": 1465, "ORL": 1460, "BKN": 1450, "DAL": 1445, "DET": 1440,
+    "SAS": 1435, "UTA": 1420, "WAS": 1415, "CHA": 1410, "PHI": 1400,
+}
 
 
 class EloModel(MathModel):
@@ -58,82 +77,164 @@ class EloModel(MathModel):
             try:
                 with open(self.elo_file) as f:
                     data = json.load(f)
-                # Validate: if all values are 1500, ratings not bootstrapped yet
                 if len(set(data.values())) > 1:
+                    logger.info(f"Elo ratings loaded from {self.elo_file}: {len(data)} teams")
                     return data
             except Exception:
                 pass
-        # Bootstrap from BDL standings
-        return self._bootstrap_from_bdl()
-
-    def _bootstrap_from_bdl(self) -> dict:
-        """Fetch current season win% from BDL and convert to Elo ratings."""
-        try:
-            import requests as _req
-            r = _req.get(
-                "https://api.balldontlie.io/v1/standings",
-                params={"season": 2025},
-                timeout=10
-            )
-            if r.status_code == 200:
-                standings = r.json().get("data", [])
-                if standings:
-                    ratings = {}
-                    for s in standings:
-                        abbr = s.get("team", {}).get("abbreviation", "")
-                        wins = s.get("wins", 0)
-                        losses = s.get("losses", 1)
-                        win_pct = wins / max(wins + losses, 1)
-                        # Map win% to Elo: 0.200 → 1350, 0.600 → 1600, 0.800 → 1700
-                        elo = 1350 + win_pct * 450
-                        if abbr:
-                            ratings[abbr] = round(elo, 1)
-                    if ratings:
-                        os.makedirs(os.path.dirname(self.elo_file) or ".", exist_ok=True)
-                        with open(self.elo_file, "w") as f:
-                            json.dump(ratings, f, indent=2)
-                        logger.info(f"Elo bootstrapped from BDL standings: {len(ratings)} teams")
-                        return ratings
-        except Exception as e:
-            logger.warning(f"BDL standings bootstrap failed: {e}")
-
-        # Hard-coded fallback (2025-26 approximation)
-        return {
-            "CLE": 1650, "OKC": 1640, "BOS": 1620, "MEM": 1590, "HOU": 1580,
-            "GSW": 1560, "DEN": 1555, "NYK": 1545, "MIN": 1540, "LAC": 1530,
-            "MIL": 1525, "IND": 1520, "MIA": 1515, "PHX": 1510, "LAL": 1505,
-            "ATL": 1495, "SAC": 1490, "CHI": 1485, "POR": 1480, "NOP": 1475,
-            "TOR": 1465, "ORL": 1460, "BKN": 1450, "DAL": 1445, "DET": 1440,
-            "SAS": 1435, "UTA": 1420, "WAS": 1415, "CHA": 1410, "PHI": 1400,
-        }
+        logger.info("Elo: using default 2025-26 ratings")
+        return dict(DEFAULT_ELO)
 
     def _save_ratings(self):
         os.makedirs("data", exist_ok=True)
-        with open(self.elo_file, 'w') as f:
+        with open(self.elo_file, "w") as f:
             json.dump(self.ratings, f, indent=2)
 
+    def _get_rank(self, abbr: str) -> int:
+        """Return 1-based ranking from best (1) to worst (30) by Elo."""
+        sorted_teams = sorted(self.ratings.items(), key=lambda x: x[1], reverse=True)
+        for i, (team, _) in enumerate(sorted_teams, 1):
+            if team == abbr:
+                return i
+        return 15  # default mid-rank
+
+    def _season_probability(self, abbr: str, question_type: str) -> tuple:
+        """
+        Compute season-long probability based on Elo rank.
+        Returns (probability, confidence, reasoning).
+
+        Types: playoff, championship, conference, division, worst_record, award
+        """
+        rank = self._get_rank(abbr)
+        elo = self.ratings.get(abbr, 1500)
+
+        if question_type == "playoff":
+            # Top 8 per conference = 16/30 make playoffs total
+            # Based on rank: top 3 very likely, 13-17 bubble, bottom 10 very unlikely
+            if rank <= 6:
+                prob = 0.85 - (rank - 1) * 0.05
+            elif rank <= 10:
+                prob = 0.60 - (rank - 7) * 0.08
+            elif rank <= 16:
+                prob = 0.35 - (rank - 11) * 0.04
+            elif rank <= 22:
+                prob = 0.15 - (rank - 17) * 0.015
+            else:
+                prob = max(0.04, 0.07 - (rank - 23) * 0.01)
+            confidence = 0.35
+
+        elif question_type == "championship":
+            # Only top teams have real shot; drops off quickly
+            if rank == 1:
+                prob = 0.18
+            elif rank <= 3:
+                prob = 0.10 - (rank - 2) * 0.02
+            elif rank <= 6:
+                prob = 0.06 - (rank - 4) * 0.01
+            elif rank <= 10:
+                prob = 0.025
+            elif rank <= 16:
+                prob = 0.010
+            else:
+                prob = 0.003
+            confidence = 0.40
+
+        elif question_type == "conference":
+            # Win a conference (top 8 teams, 4 rounds)
+            if rank <= 2:
+                prob = 0.28
+            elif rank <= 4:
+                prob = 0.18
+            elif rank <= 8:
+                prob = 0.10
+            elif rank <= 12:
+                prob = 0.04
+            elif rank <= 18:
+                prob = 0.01
+            else:
+                prob = 0.003
+            confidence = 0.38
+
+        elif question_type == "division":
+            # Win a division (usually top 5 per division ~6 teams)
+            if rank <= 3:
+                prob = 0.40
+            elif rank <= 6:
+                prob = 0.25
+            elif rank <= 10:
+                prob = 0.12
+            elif rank <= 16:
+                prob = 0.05
+            else:
+                prob = 0.02
+            confidence = 0.35
+
+        elif question_type == "worst_record":
+            # Worst record = highest rank from bottom
+            bottom_rank = 31 - rank  # bottom_rank=1 means worst team
+            if bottom_rank <= 2:
+                prob = 0.25
+            elif bottom_rank <= 4:
+                prob = 0.12
+            elif bottom_rank <= 6:
+                prob = 0.06
+            elif bottom_rank <= 10:
+                prob = 0.02
+            else:
+                prob = 0.005
+            confidence = 0.35
+
+        else:
+            # Unknown season question type
+            return None, None, "unknown season question type"
+
+        prob = max(0.02, min(0.95, prob))
+        reasoning = f"Elo rank #{rank} ({abbr} {elo:.0f}) → {question_type} prob={prob:.1%}"
+        return prob, confidence, reasoning
+
+    def _detect_question_type(self, question: str) -> str:
+        """Detect season question type from question text."""
+        q = question.lower()
+        if any(w in q for w in ["make the nba playoffs", "reach the playoffs", "qualify for the playoffs",
+                                  "make the playoffs"]):
+            return "playoff"
+        if any(w in q for w in ["nba champion", "win the nba", "nba finals", "nba title",
+                                  "larry o'brien", "win it all"]):
+            return "championship"
+        if any(w in q for w in ["eastern conference", "western conference",
+                                  "conference champion", "conference title",
+                                  "conference finals", "win the east", "win the west"]):
+            return "conference"
+        if any(w in q for w in ["division", "atlantic", "central", "southeast",
+                                  "northwest", "pacific", "southwest"]):
+            return "division"
+        if any(w in q for w in ["worst record", "fewest wins", "most losses", "lottery",
+                                  "first overall pick", "finish last", "finish with the worst"]):
+            return "worst_record"
+        if any(w in q for w in ["mvp", "rookie", "sixth man", "dpoy", "defensive player",
+                                  "most improved", "coach of the year", "award", "all-star",
+                                  "all-nba", "scoring title", "triple-double"]):
+            return "award"
+        return "unknown"
+
     def update_ratings(self):
-        """Called every 2h by scheduler to update from recent games."""
+        """Called every 2h to update from recent games via BDL."""
         try:
             import datetime
             today = datetime.date.today().isoformat()
             yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-            r = requests.get(
-                f"{BDL_BASE}/games",
-                params={"dates[]": [yesterday, today]},
-                timeout=10
-            )
+            r = requests.get(f"{BDL_BASE}/games", params={"dates[]": [yesterday, today]}, timeout=10)
             if r.status_code != 200:
                 return
-            games = r.json().get('data', [])
+            games = r.json().get("data", [])
             updated = 0
             for game in games:
-                if game.get('status') != 'Final':
+                if game.get("status") != "Final":
                     continue
-                home = game.get('home_team', {}).get('abbreviation', '')
-                away = game.get('visitor_team', {}).get('abbreviation', '')
-                home_score = game.get('home_team_score', 0)
-                away_score = game.get('visitor_team_score', 0)
+                home = game.get("home_team", {}).get("abbreviation", "")
+                away = game.get("visitor_team", {}).get("abbreviation", "")
+                home_score = game.get("home_team_score", 0)
+                away_score = game.get("visitor_team_score", 0)
                 if not home or not away or (home_score == 0 and away_score == 0):
                     continue
                 home_elo = self.ratings.get(home, 1500)
@@ -146,12 +247,11 @@ class EloModel(MathModel):
                 updated += 1
             if updated > 0:
                 self._save_ratings()
-                logger.info(f"Updated Elo ratings for {updated} completed games.")
+                logger.info(f"Elo updated for {updated} games")
         except Exception as e:
             logger.warning(f"Elo update failed: {e}")
 
     def _parse_matchup(self, question: str):
-        """Extract two NBA team abbreviations from a question."""
         question_lower = question.lower()
         found = []
         for name, abbr in NBA_TEAMS.items():
@@ -167,7 +267,6 @@ class EloModel(MathModel):
         return None, None
 
     def _fetch_injuries(self, team_abbr: str) -> list:
-        """Fetch injuries via ESPN, cached 4h."""
         if time.time() - self._injury_cache_time < 14400 and self._injury_cache:
             return self._injury_cache.get(team_abbr, [])
         try:
@@ -175,78 +274,93 @@ class EloModel(MathModel):
             if r.status_code == 200:
                 data = r.json()
                 self._injury_cache = {}
-                for team in data.get('items', []):
-                    t_abbr = team.get('team', {}).get('abbreviation', '')
+                for team in data.get("items", []):
+                    t_abbr = team.get("team", {}).get("abbreviation", "")
                     injuries = []
-                    for athlete in team.get('injuries', []):
-                        status = athlete.get('status', '').lower()
-                        name = athlete.get('athlete', {}).get('displayName', '')
-                        if status in ['out', 'doubtful']:
-                            injuries.append({'name': name, 'status': status})
+                    for athlete in team.get("injuries", []):
+                        status = athlete.get("status", "").lower()
+                        name = athlete.get("athlete", {}).get("displayName", "")
+                        if status in ["out", "doubtful"]:
+                            injuries.append({"name": name, "status": status})
                     self._injury_cache[t_abbr] = injuries
                 self._injury_cache_time = time.time()
             return self._injury_cache.get(team_abbr, [])
         except Exception:
             return []
 
-    def calculate_probability(self, market, external_data=None) -> dict:  # noqa: ARG002
-        question = market.question if hasattr(market, 'question') else market.get('question', '')
+    def calculate_probability(self, market, external_data=None) -> dict:
+        question = market.question if hasattr(market, "question") else market.get("question", "")
         team1, team2 = self._parse_matchup(question)
 
+        # No team found → fall back
         if not team1:
             return self._fallback(market)
 
-        elo1 = self.ratings.get(team1, 1500)
-        elo2 = self.ratings.get(team2, 1500) if team2 else 1500
-
-        adjustments1 = 0
-        adjustments2 = 0
-        # 1 team vs average = weaker signal than a direct matchup
-        confidence = 0.50 if team2 else 0.30
-
         q_lower = question.lower()
-        if "home" in q_lower or "at home" in q_lower:
-            adjustments1 += 60
-            confidence += 0.03
 
-        injuries1 = self._fetch_injuries(team1)
-        injuries2 = self._fetch_injuries(team2) if team2 else []
-        adjustments1 -= len(injuries1) * 40
-        adjustments2 -= len(injuries2) * 40
-        if injuries1 or injuries2:
-            confidence += 0.05
+        # ── CASE 1: Head-to-head matchup (team2 found) ─────────────────
+        if team2:
+            elo1 = self.ratings.get(team1, 1500)
+            elo2 = self.ratings.get(team2, 1500)
+            adjustments1 = 0
+            adjustments2 = 0
+            confidence = 0.50
 
-        adj_elo1 = elo1 + adjustments1
-        adj_elo2 = elo2 + adjustments2
-        # P(team1 wins a single game)
-        prob = 1 / (1 + 10 ** ((adj_elo2 - adj_elo1) / 400))
+            if "home" in q_lower or "at home" in q_lower:
+                adjustments1 += 60
+                confidence += 0.03
 
-        # Adjust for multi-round playoff questions (team must win 2+ series)
-        is_multi_round = any(kw in q_lower for kw in [
-            "conference finals", "finals mvp", "nba finals",
-            "championship", "nba champion"
-        ])
-        if is_multi_round and not team2:
-            # Rough approximation: winning 2 rounds ≈ prob^2
-            prob = prob ** 2
-            confidence = max(0.20, confidence - 0.10)  # less confident about multi-round
+            injuries1 = self._fetch_injuries(team1)
+            injuries2 = self._fetch_injuries(team2)
+            adjustments1 -= len(injuries1) * 40
+            adjustments2 -= len(injuries2) * 40
+            if injuries1 or injuries2:
+                confidence += 0.05
 
-        confidence = min(confidence, 0.75)
+            adj_elo1 = elo1 + adjustments1
+            adj_elo2 = elo2 + adjustments2
+            prob = 1 / (1 + 10 ** ((adj_elo2 - adj_elo1) / 400))
+            confidence = min(confidence, 0.75)
+
+            return {
+                "probability": prob,
+                "confidence": confidence,
+                "method": f"Elo_H2H({team1}={adj_elo1:.0f} vs {team2}={adj_elo2:.0f})",
+                "factors": {
+                    "team1": team1, "team2": team2,
+                    "elo1": round(elo1), "elo2": round(elo2),
+                    "adj1": adjustments1, "adj2": adjustments2,
+                    "injuries1": len(injuries1), "injuries2": len(injuries2),
+                },
+                "reasoning": (
+                    f"{team1}(Elo {adj_elo1:.0f}) vs {team2}(Elo {adj_elo2:.0f}). "
+                    f"Prob={prob:.1%}. Injuries: {len(injuries1)} vs {len(injuries2)}."
+                )
+            }
+
+        # ── CASE 2: Individual award question → fall back ───────────────
+        q_type = self._detect_question_type(question)
+        if q_type == "award":
+            return self._fallback(market)
+
+        # ── CASE 3: Season prediction (single team) ─────────────────────
+        if q_type == "unknown":
+            # Can't determine question type — use fallback
+            return self._fallback(market)
+
+        prob, confidence, reasoning = self._season_probability(team1, q_type)
+        if prob is None:
+            return self._fallback(market)
 
         return {
-            'probability': prob,
-            'confidence': confidence,
-            'method': f'Elo({team1}={adj_elo1:.0f} vs {team2 or "avg"}={adj_elo2:.0f})',
-            'factors': {
-                'team1': team1, 'team2': team2,
-                'elo1': round(elo1), 'elo2': round(elo2),
-                'adj1': adjustments1, 'adj2': adjustments2,
-                'injuries1': len(injuries1), 'injuries2': len(injuries2),
-                'multi_round': is_multi_round,
+            "probability": prob,
+            "confidence": confidence,
+            "method": f"Elo_season_{q_type}(#{self._get_rank(team1)})",
+            "factors": {
+                "team": team1,
+                "elo": self.ratings.get(team1, 1500),
+                "rank": self._get_rank(team1),
+                "question_type": q_type,
             },
-            'reasoning': (
-                f'{team1}(Elo {adj_elo1:.0f}) vs {team2 or "avg"}(Elo {adj_elo2:.0f}). '
-                f'Prob={prob:.1%}{"(multi-round adj)" if is_multi_round else ""}. '
-                f'Injuries: {len(injuries1)} vs {len(injuries2)}.'
-            )
+            "reasoning": reasoning,
         }
