@@ -340,7 +340,7 @@ def _process_with_ai(market, model_result, edge_result,
 def _load_math_models(config):
     """Load all math models using the registry singleton."""
     from core.math_models import get_model
-    niches = ['nba', 'f1', 'crypto', 'geopolitics', 'politics', 'golf', 'generic']
+    niches = ['nba', 'f1', 'crypto', 'geopolitics', 'politics', 'golf', 'generic', 'sports_other', 'entertainment', 'tech', 'science', 'other']
     math_models = {}
     for niche in niches:
         try:
