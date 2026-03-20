@@ -2,7 +2,7 @@ cycle_interval_minutes: 30
 api_limits:
   max_haiku_calls_per_day: 100
   max_haiku_classify_per_day: 0
-  max_sonnet_calls_per_day: 10
+  max_sonnet_calls_per_day: 20
   max_monthly_cost_eur: 5
 filters:
   min_volume_usd: 1000
@@ -14,7 +14,7 @@ filters:
   price_change_threshold: 0.02
   min_math_edge: 0.03
   min_math_confidence: 0.45
-  min_confirmed_edge: 0.05
+  min_confirmed_edge: 0.03
   min_final_edge: 0.06
 kelly:
   fraction: 0.25

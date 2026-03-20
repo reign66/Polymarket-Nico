@@ -187,51 +187,97 @@ def _process_with_ai(market, model_result, edge_result,
                      session, haiku_confirmer, sonnet_decider,
                      pm_client, position_sizer, risk_manager, telegram, stats):
     """
-    Steps 5-7 for a single market: Haiku → Sonnet → execute.
-    Math scoring is already done; markets arrive sorted by edge (best first).
+    MATH-FIRST MODE:
+    - Edge >= 8% + conf >= 35% → BET DIRECT (no AI)
+    - Edge 5-8% OR ambiguous → Sonnet decides
+    - Haiku disabled
     """
     from core.database import record_signal, get_capital
 
     niche = market.niche
+    best_edge = edge_result.best_edge
+    conf = edge_result.model_confidence
+    adj_edge = edge_result.confidence_adjusted_edge
 
     logger.info(
-        f"[{niche.upper()}] Edge {edge_result.best_edge:.1%} "
-        f"(adj {edge_result.confidence_adjusted_edge:.1%}, conf {edge_result.model_confidence:.0%}) "
+        f"[{niche.upper()}] Edge {best_edge:.1%} "
+        f"(adj {adj_edge:.1%}, conf {conf:.0%}) "
         f"| {market.question[:60]}"
     )
 
-    # Step 5: Haiku confirmation
-    haiku_result = haiku_confirmer.confirm_edge(market, model_result, edge_result)
+    # MATH-FIRST: bet direct si edge fort + confiance raisonnable
+    DIRECT_BET_EDGE = 0.08    # >= 8% edge → bet sans AI
+    DIRECT_BET_CONF = 0.30    # conf >= 30%
+    SONNET_MIN_EDGE = 0.05    # 5-8% → Sonnet juge
 
-    # Count only real API calls (not limit-skip returns)
-    if "limit reached" not in haiku_result.reason.lower() and "unavailable" not in haiku_result.reason.lower():
-        stats['haiku_actual'] += 1
+    use_sonnet = False
+    skip_reason = ""
+
+    if best_edge >= DIRECT_BET_EDGE and conf >= DIRECT_BET_CONF:
+        # Direct bet — math est suffisamment confiant
+        logger.info(f"MATH DIRECT BET [{niche.upper()}]: edge={best_edge:.1%} conf={conf:.0%} — no AI needed")
+        stats['haiku_confirmed'] += 1  # count as confirmed
+        # Create a synthetic sonnet result
+        from core.sonnet_decider import SonnetResult
+        sonnet_result = SonnetResult(
+            go=True,
+            direction=edge_result.best_direction,
+            confidence='HIGH' if conf >= 0.50 else 'MEDIUM',
+            edge_estimate=best_edge,
+            rationale=f"Math direct: {model_result.get('method','?')} edge={best_edge:.1%} conf={conf:.0%}",
+            risk="Math model risk"
+        )
+        stats['sonnet_called'] += 1
+    elif best_edge >= SONNET_MIN_EDGE:
+        # Edge modéré → Sonnet tranche
+        use_sonnet = True
+        from dataclasses import dataclass
+        @dataclass
+        class FakeHaikuResult:
+            confirmed: bool = True
+            adjusted_edge: float = 0.0
+            reason: str = "math_bypass"
+            tokens_used: int = 0
+        fake_haiku = FakeHaikuResult(confirmed=True, adjusted_edge=adj_edge)
+        sonnet_result = sonnet_decider.decide_bet(market, model_result, edge_result, fake_haiku)
+        stats['sonnet_called'] += 1
+        if not sonnet_result.go:
+            record_signal(
+                session,
+                market_id=market.market_id,
+                market_question=market.question,
+                niche=niche,
+                math_probability=model_result.get('probability', 0.5),
+                math_confidence=conf,
+                math_method=model_result.get('method', 'unknown'),
+                math_edge=best_edge,
+                haiku_called=False,
+                haiku_confirmed=True,
+                sonnet_called=True,
+                sonnet_go=False,
+                sonnet_direction=sonnet_result.direction,
+                sonnet_confidence=sonnet_result.confidence,
+                funnel_step='sonnet',
+                skip_reason=f'Sonnet: {sonnet_result.rationale}',
+            )
+            return
     else:
-        logger.info(f"Haiku SKIPPED ({haiku_result.reason}): {market.question[:50]}")
-
-    if not haiku_result.confirmed:
+        skip_reason = f"Edge {best_edge:.1%} < {SONNET_MIN_EDGE:.0%} minimum"
         record_signal(
             session,
             market_id=market.market_id,
             market_question=market.question,
             niche=niche,
             math_probability=model_result.get('probability', 0.5),
-            math_confidence=model_result.get('confidence', 0.05),
+            math_confidence=conf,
             math_method=model_result.get('method', 'unknown'),
-            math_edge=edge_result.best_edge,
-            haiku_called=True,
+            math_edge=best_edge,
+            haiku_called=False,
             haiku_confirmed=False,
-            haiku_adjusted_edge=haiku_result.adjusted_edge,
-            funnel_step='haiku',
-            skip_reason=f'Haiku: {haiku_result.reason}',
+            funnel_step='math_edge',
+            skip_reason=skip_reason,
         )
         return
-
-    stats['haiku_confirmed'] += 1
-
-    # Step 6: Sonnet decision
-    sonnet_result = sonnet_decider.decide_bet(market, model_result, edge_result, haiku_result)
-    stats['sonnet_called'] += 1
 
     if not sonnet_result.go:
         record_signal(
