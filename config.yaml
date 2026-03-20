@@ -22,9 +22,9 @@ kelly:
 risk:
   daily_loss_limit_pct: 0.10
   weekly_drawdown_limit_pct: 0.25
-  max_open_positions: 8
-  small_cap_daily_pct: 0.30
-  standard_daily_pct: 0.40
+  max_open_positions: 20
+  small_cap_daily_pct: 0.95
+  standard_daily_pct: 0.95
 exit:
   take_profit_pct: 0.20
   stop_loss_pct: 0.15
