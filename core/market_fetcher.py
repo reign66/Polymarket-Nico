@@ -12,6 +12,12 @@ GAMMA_API = 'https://gamma-api.polymarket.com'
 CLOB_API = 'https://clob.polymarket.com'
 HEADERS = {'User-Agent': 'PolymarketBot/2.0 Research'}
 
+# DATA FRESHNESS NOTES:
+# - Gamma API markets (prices)  : fetched every cycle, cached 5 min — LIVE
+# - CLOB orderbook              : cached 5 min — LIVE
+# - Price history (DB)          : recorded every 30 min cycle — builds up over time
+# - Price history (API fallback): fetched on-demand by models when DB empty
+
 
 class MarketData:
     """Data class for market info."""
@@ -28,7 +34,6 @@ class MarketData:
         self.spread = kwargs.get('spread', 0)
         self.niche = kwargs.get('niche', None)
         self.tokens = kwargs.get('tokens', [])
-        # Gamma API metadata for classifier
         self.tags = kwargs.get('tags', [])
         self.category = kwargs.get('category', '')
         self.group_slugs = kwargs.get('groupSlugs', [])
@@ -55,15 +60,15 @@ class MarketData:
 class MarketFetcher:
     def __init__(self, db_session):
         self.session = db_session
-        self._cache: Dict[str, tuple] = {}  # url_key -> (timestamp, data)
-        self._full_fetch_cache: Optional[tuple] = None  # (timestamp, markets)
-        self._full_fetch_ttl = 600  # 10 min
+        self._cache: Dict[str, tuple] = {}
+        self._full_fetch_cache: Optional[tuple] = None
+        self._full_fetch_ttl = 300  # 5 min (was 10 min) — Gamma prices are live
 
     def _make_cache_key(self, url: str, params: Optional[dict] = None) -> str:
         raw = url + (json.dumps(params, sort_keys=True) if params else '')
         return hashlib.md5(raw.encode()).hexdigest()
 
-    def _request(self, url: str, params: Optional[dict] = None, cache_seconds: int = 600):
+    def _request(self, url: str, params: Optional[dict] = None, cache_seconds: int = 300):
         cache_key = self._make_cache_key(url, params)
         now = time.time()
 
@@ -149,7 +154,6 @@ class MarketFetcher:
             except Exception:
                 pass
 
-            # Preserve Gamma API metadata for classifier
             tags = item.get('tags', [])
             category = item.get('category', '')
             group_slugs = item.get('groupSlugs', [])
@@ -205,18 +209,22 @@ class MarketFetcher:
             logger.debug(f"Could not record price for {market.market_id}: {e}")
 
     def fetch_active_markets(self) -> List[MarketData]:
-        # Full-fetch cache: 10 min
+        # Full-fetch cache: 5 min — Gamma API prices are LIVE
         now = time.time()
         if self._full_fetch_cache:
             cached_ts, cached_markets = self._full_fetch_cache
-            if now - cached_ts < self._full_fetch_ttl:
-                logger.debug(f"fetch_active_markets: returning {len(cached_markets)} from full cache")
+            age_s = now - cached_ts
+            if age_s < self._full_fetch_ttl:
+                logger.debug(
+                    f"fetch_active_markets: returning {len(cached_markets)} from cache "
+                    f"(age={age_s:.0f}s / {self._full_fetch_ttl}s max)"
+                )
                 return cached_markets
 
         all_markets: List[MarketData] = []
         all_ids = []
         page_size = 100
-        max_offset = 1400  # Up to ~1500 markets
+        max_offset = 1400
 
         offset = 0
         while offset <= max_offset:
@@ -235,7 +243,6 @@ class MarketFetcher:
             if not items:
                 break
 
-            # TEMP: log raw fields of first 3 items on first page to inspect Gamma API structure
             if offset == 0:
                 for sample in items[:3]:
                     tag_fields = {k: sample.get(k) for k in
@@ -243,18 +250,15 @@ class MarketFetcher:
                                    'group', 'groupSlug', 'outcomes', 'markets')}
                     logger.info(f"GAMMA SAMPLE fields: {json.dumps(tag_fields, default=str)[:600]}")
 
-            price_change_threshold = 0.02  # 2% minimum change to re-analyze
+            price_change_threshold = 0.02
             for item in items:
                 market = self._parse_market_item(item)
                 if not market or not market.market_id:
                     continue
 
                 all_ids.append(market.market_id)
-
-                # Record price for every market (builds momentum history)
                 self._record_price(market)
 
-                # Skip if price hasn't changed much (dedup)
                 cached_price = self._get_cached_market_price(market.market_id)
                 if cached_price is not None:
                     price_change = abs(market.yes_price - cached_price)
@@ -269,7 +273,6 @@ class MarketFetcher:
 
             offset += page_size
 
-        # Mark inactive markets in niche_cache
         if all_ids:
             try:
                 from core.database import mark_inactive_markets
@@ -280,13 +283,13 @@ class MarketFetcher:
         self._full_fetch_cache = (now, all_markets)
         logger.info(
             f"fetch_active_markets: {len(all_ids)} total seen, "
-            f"{len(all_markets)} new/changed (price moved ≥2%)"
+            f"{len(all_markets)} new/changed (price moved >=2%) — DATA IS LIVE (Gamma API)"
         )
         return all_markets
 
     def get_market_details(self, market_id: str) -> Optional[MarketData]:
         url = f"{GAMMA_API}/markets/{market_id}"
-        data = self._request(url, cache_seconds=600)
+        data = self._request(url, cache_seconds=300)
         if not data:
             return None
         item = data if isinstance(data, dict) else None
