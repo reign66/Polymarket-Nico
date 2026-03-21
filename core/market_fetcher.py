@@ -259,11 +259,16 @@ class MarketFetcher:
                 all_ids.append(market.market_id)
                 self._record_price(market)
 
-                cached_price = self._get_cached_market_price(market.market_id)
-                if cached_price is not None:
-                    price_change = abs(market.yes_price - cached_price)
-                    if price_change < price_change_threshold:
-                        continue
+                # V2.3 FIX: price-change filter was excluding stable markets (politics,
+                # soccer, tech) because their prices don't move much cycle-to-cycle.
+                # Result: only volatile NBA markets (active season) passed the filter.
+                # Fix: always include ALL markets in cycle, remove the price filter.
+                # The edge_calculator handles "no signal" via edge=0 → skip.
+                # cached_price = self._get_cached_market_price(market.market_id)
+                # if cached_price is not None:
+                #     price_change = abs(market.yes_price - cached_price)
+                #     if price_change < price_change_threshold:
+                #         continue
 
                 self._update_db_cache(market)
                 all_markets.append(market)
