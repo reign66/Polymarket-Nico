@@ -249,6 +249,8 @@ def _process_with_ai(market, model_result, edge_result,
         return
 
     if not sonnet_result.go:
+        # haiku_result may not exist in FULL MATH mode
+        _haiku_adj = getattr(haiku_result, 'adjusted_edge', edge_result.confidence_adjusted_edge) if 'haiku_result' in dir() else edge_result.confidence_adjusted_edge
         record_signal(
             session,
             market_id=market.market_id,
@@ -260,7 +262,7 @@ def _process_with_ai(market, model_result, edge_result,
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=True,
-            haiku_adjusted_edge=haiku_result.adjusted_edge,
+            haiku_adjusted_edge=_haiku_adj,
             sonnet_called=True,
             sonnet_go=False,
             sonnet_direction=sonnet_result.direction,
@@ -353,7 +355,7 @@ def _process_with_ai(market, model_result, edge_result,
             math_edge=edge_result.best_edge,
             haiku_called=True,
             haiku_confirmed=True,
-            haiku_adjusted_edge=haiku_result.adjusted_edge,
+            haiku_adjusted_edge=_haiku_adj if '_haiku_adj' in dir() else edge_result.confidence_adjusted_edge,
             sonnet_called=True,
             sonnet_go=True,
             sonnet_direction=direction,
@@ -364,6 +366,7 @@ def _process_with_ai(market, model_result, edge_result,
             funnel_step='bet',
         )
 
+        _haiku_reason = getattr(haiku_result, 'reason', 'Full math — no Haiku') if 'haiku_result' in dir() else 'Full math — no Haiku'
         if telegram:
             telegram.send_entry_notification(
                 niche=niche,
@@ -374,7 +377,7 @@ def _process_with_ai(market, model_result, edge_result,
                 math_edge=edge_result.best_edge,
                 method=model_result.get('method', 'unknown'),
                 confidence_pct=model_result.get('confidence', 0.05),
-                haiku_reason=haiku_result.reason,
+                haiku_reason=_haiku_reason,
                 sonnet_confidence=sonnet_result.confidence,
                 sonnet_rationale=sonnet_result.rationale,
                 sonnet_risk=sonnet_result.risk,
