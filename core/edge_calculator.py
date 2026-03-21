@@ -1,5 +1,13 @@
 """
-core/edge_calculator.py — V2.2 Edge calculator with adaptive thresholds.
+core/edge_calculator.py — V2.3 Edge calculator with adaptive thresholds + low-price penalty.
+
+Changelog V2.3:
+- Low-price penalty: markets priced < 8¢ get confidence halved.
+  Rationale: price < 8¢ = the market already thinks this is very unlikely.
+  Our model edge on these markets is likely noise or model error.
+  Position 17 (entry=4.3¢, loss=-61.6%) and position 4 (entry=3.95¢, loss=-21.5%)
+  are the exact failure cases this fix addresses.
+- Min entry price filter: skip markets < 3.5¢ (min_price now enforced at edge level too)
 
 Changelog V2.2:
 - Added quaternary condition: edge >= 10% AND conf >= 0.25
@@ -47,6 +55,36 @@ class EdgeCalculator:
         model_prob = model_result.get('probability', 0.5)
         model_confidence = model_result.get('confidence', 0.05)
         model_result_method = model_result.get('method', '')
+
+        # ── LOW-PRICE CONFIDENCE PENALTY (V2.3) ─────────────────────────
+        # Markets priced < 8¢ are extreme longshots. Our edge estimates on
+        # these markets are unreliable: one piece of news destroys -50%+ in
+        # a single cycle. Apply a confidence haircut to reduce bet frequency.
+        # Postmortem: positions 17 (entry=4.3¢, -61.6%) and 4 (entry=3.95¢, -21.5%)
+        # both triggered because edge was OK but price was a red flag.
+        if yes_price < 0.035:
+            # Below 3.5¢ — skip entirely (market likely near-resolved NO)
+            model_confidence = 0.0
+        elif yes_price < 0.05:
+            # Very low price: confidence halved
+            model_confidence = model_confidence * 0.40
+            logger.debug(f"LOW-PRICE PENALTY [{market_id}]: price={yes_price:.3f} < 5¢ → conf halved")
+        elif yes_price < 0.08:
+            # Low price: confidence reduced 30%
+            model_confidence = model_confidence * 0.60
+            logger.debug(f"LOW-PRICE PENALTY [{market_id}]: price={yes_price:.3f} < 8¢ → conf -40%")
+        elif yes_price < 0.12:
+            # Slightly low: -15%
+            model_confidence = model_confidence * 0.85
+
+        # Same penalty for NO direction (high price = low NO price)
+        no_price_check = 1.0 - yes_price
+        if no_price_check < 0.035:
+            model_confidence = 0.0
+        elif no_price_check < 0.05 and model_confidence > 0:
+            model_confidence = model_confidence * 0.40
+        elif no_price_check < 0.08 and model_confidence > 0:
+            model_confidence = model_confidence * 0.60
 
         # Raw edges
         edge_yes = model_prob - yes_price

@@ -574,6 +574,30 @@ def main():
         name='Daily Report',
     )
 
+    # Postmortem quotidien à 21h UTC (après clôture des marchés US)
+    # Analyse les paris perdants, identifie les causes, suggère des améliorations
+    from tools.daily_postmortem import DailyPostmortem
+    postmortem = DailyPostmortem(db_session=session, telegram=telegram)
+
+    def run_postmortem():
+        try:
+            logger.info("Running daily postmortem analysis...")
+            result = postmortem.run()
+            logger.info(
+                f"Postmortem done: {result['wins']}W/{result['losses']}L "
+                f"PnL={result['total_pnl']:+.2f} "
+                f"{len(result['suggestions'])} suggestions"
+            )
+        except Exception as e:
+            logger.error(f"Postmortem error: {e}", exc_info=True)
+
+    scheduler.add_job(
+        run_postmortem,
+        CronTrigger(hour=21, minute=0),
+        id='daily_postmortem',
+        name='Daily Postmortem (21h UTC)',
+    )
+
     # Weekly report every Monday at 09:00 UTC
     def weekly_report():
         try:

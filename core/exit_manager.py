@@ -75,8 +75,24 @@ class ExitManager:
         position.pnl_unrealized = round(pnl_pct * position.amount_usdc, 2)
 
         take_profit = self.exit_config.get('take_profit_pct', 0.20)
-        stop_loss = self.exit_config.get('stop_loss_pct', 0.15)
+        stop_loss_default = self.exit_config.get('stop_loss_pct', 0.15)
         near_hours = self.exit_config.get('near_resolution_hours', 48)
+
+        # ── ADAPTIVE STOP LOSS (V2.3 fix) ──────────────────────────────
+        # Low-price markets (< 8¢) are hyper-volatile: a 2¢ move = -50%.
+        # We can't catch -15% in 30 min intervals on these markets.
+        # Use tighter stop loss for low-price entries.
+        entry = position.entry_price or 0.5
+        if entry < 0.05:
+            # Very low price (< 5¢): stop at -20% to catch faster
+            stop_loss = 0.10
+        elif entry < 0.08:
+            # Low price (5-8¢): tighter stop
+            stop_loss = 0.12
+        elif entry < 0.15:
+            stop_loss = 0.13
+        else:
+            stop_loss = stop_loss_default
 
         # Take profit
         if pnl_pct >= take_profit:
@@ -84,9 +100,9 @@ class ExitManager:
             self._execute_exit(position, current_price, 'take-profit')
             return
 
-        # Stop loss
+        # Stop loss (adaptive)
         if pnl_pct <= -stop_loss:
-            logger.info(f"STOP LOSS: position {position.id}, pnl={pnl_pct:.1%}")
+            logger.info(f"STOP LOSS: position {position.id}, pnl={pnl_pct:.1%} (threshold={stop_loss:.0%}, entry={entry:.3f})")
             self._execute_exit(position, current_price, 'stop-loss')
             return
 

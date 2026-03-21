@@ -140,7 +140,6 @@ class TelegramAlerter:
         return self._send(text)
 
     def send_daily_report(self, stats: dict) -> bool:
-        return False  # disabled — positions only
         date_str = stats.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
         pnl = stats.get('pnl_day', 0.0)
         capital = stats.get('capital', 0.0)
@@ -199,7 +198,6 @@ class TelegramAlerter:
         return self._send(text)
 
     def send_weekly_report(self, stats: dict) -> bool:
-        return False  # disabled — positions only
         date_str = stats.get('date', datetime.utcnow().strftime('%Y-%m-%d'))
         pnl = stats.get('pnl_day', 0.0)
         capital = stats.get('capital', 0.0)

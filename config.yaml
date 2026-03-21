@@ -9,8 +9,9 @@ filters:
   max_spread: 0.15
   min_hours_to_resolution: 0.25
   max_days_to_resolution: 999
-  min_price: 0.02
-  max_price: 0.98
+  min_price: 0.04       # V2.3: raised from 0.02 — avoid sub-4¢ longshots (postmortem pos 4 & 17)
+  max_price: 0.96       # V2.3: also avoids sub-4¢ NO markets (price > 96¢)
+  low_price_warning: 0.08  # V2.3: log a warning when entry price < 8¢
   price_change_threshold: 0.02
   min_math_edge: 0.03
   min_math_confidence: 0.45

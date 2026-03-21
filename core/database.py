@@ -540,6 +540,22 @@ def get_positions_by_market(session, market_id: str) -> list:
 # ---------------------------------------------------------------------------
 
 
+def get_closed_positions_today(session) -> list:
+    """Return closed positions from the last 24h — used by daily postmortem."""
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        return (
+            session.query(Position)
+            .filter(Position.status == "closed")
+            .filter(Position.exit_time >= cutoff)
+            .order_by(Position.exit_time.desc())
+            .all()
+        )
+    except Exception as exc:
+        logger.error("get_closed_positions_today error: %s", exc)
+        return []
+
+
 def get_closed_positions(session, limit: int = 20) -> list:
     """Return the last `limit` closed positions ordered by exit_time descending."""
     try:
