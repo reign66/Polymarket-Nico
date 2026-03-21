@@ -189,6 +189,17 @@ class EloModel(MathModel):
             return None, None, "unknown season question type"
 
         prob = max(0.02, min(0.95, prob))
+
+        # ── V2.3 MARKET PRICE SANITY CHECK ───────────────────────────────
+        # If the market already prices this below 6¢, it knows more than our
+        # static ELO (current standings, injuries, roster news).
+        # Postmortem 21/03: Hornets conference (-10.76) + Grizzlies worst record (-30.81)
+        # were both < 5¢ markets where ELO still saw an edge. Market was right.
+        # Rule: for "championship", "conference", "worst_record" types,
+        # if market_price < 0.06 and our model_prob < market_price * 2:
+        #   → cap confidence to 0.15 (not enough signal to bet)
+        # This check is applied in calculate_probability() using market.yes_price.
+
         reasoning = f"Elo rank #{rank} ({abbr} {elo:.0f}) → {question_type} prob={prob:.1%}"
         return prob, confidence, reasoning
 
@@ -352,6 +363,25 @@ class EloModel(MathModel):
         if prob is None:
             return self._fallback(market)
 
+        # ── V2.3 MARKET PRICE SANITY CHECK ──────────────────────────────
+        # Postmortem 21/03: Hornets conference (entry=3.95¢, -21.5%) and
+        # Grizzlies worst_record (entry=4.3¢, -61.6%) both lost because:
+        # 1. Market price < 5¢ already encodes current-season info (standings,
+        #    injuries, form) that our static ELO doesn't see.
+        # 2. For "win championship/conference/finals" at < 6¢: team is already
+        #    near-eliminated by the market. ELO edge is likely a model error.
+        # Fix: if market price < 0.06 on season-outcome markets, cap confidence.
+        yes_price = market.yes_price if hasattr(market, 'yes_price') else market.get('yes_price', 0.5)
+        if q_type in ('championship', 'conference', 'worst_record', 'finals') and yes_price < 0.06:
+            old_conf = confidence
+            confidence = min(confidence, 0.15)
+            logger.info(
+                f"ELO SANITY [{team1}] {q_type}: market={yes_price:.3f} < 6¢ → "
+                f"confidence capped {old_conf:.0%}→{confidence:.0%}. "
+                f"Market has more info than static ELO on current-season outcomes."
+            )
+            reasoning += f" | SANITY_CAP: market {yes_price:.3f} < 0.06 → conf capped to 15%"
+
         return {
             "probability": prob,
             "confidence": confidence,
@@ -361,6 +391,8 @@ class EloModel(MathModel):
                 "elo": self.ratings.get(team1, 1500),
                 "rank": self._get_rank(team1),
                 "question_type": q_type,
+                "market_price": yes_price,
+                "sanity_cap_applied": yes_price < 0.06 and q_type in ('championship', 'conference', 'worst_record', 'finals'),
             },
             "reasoning": reasoning,
         }
