@@ -20,6 +20,8 @@ def get_model(niche: str):
         'golf': ('core.math_models.golf_model', 'GolfModel'),
         # Generic fallback: GenericModel (momentum + API history)
         # RF disabled on Polymarket — no real trade history to train on
+        'soccer': ('core.math_models.soccer_model', 'SoccerModel'),
+        'mma': ('core.math_models.generic_model', 'GenericModel'),
         'generic': ('core.math_models.generic_model', 'GenericModel'),
         'sports_other': ('core.math_models.generic_model', 'GenericModel'),
         'entertainment': ('core.math_models.generic_model', 'GenericModel'),

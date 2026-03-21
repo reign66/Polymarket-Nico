@@ -14,7 +14,7 @@ filters:
   low_price_warning: 0.08  # V2.3: log a warning when entry price < 8¢
   price_change_threshold: 0.02
   min_math_edge: 0.03
-  min_math_confidence: 0.45
+  min_math_confidence: 0.25   # V2.3: baissé de 0.45 → GenericModel (conf=0.30) peut maintenant passer
   min_confirmed_edge: 0.03
   min_final_edge: 0.06
 kelly:
