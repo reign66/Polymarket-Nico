@@ -1,1 +1,1 @@
-web: python main.py
+web: python migrate_history.py && python main.py
