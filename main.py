@@ -215,7 +215,7 @@ def _process_with_ai(market, model_result, edge_result,
 
     # FULL MATH MODE — no AI at all
     FULL_MATH_EDGE = 0.04   # bet direct si edge >= 4%
-    FULL_MATH_CONF = 0.25   # conf >= 25%
+    FULL_MATH_CONF = 0.15   # conf >= 15% (baissé — 25% trop restrictif)
 
     if best_edge >= FULL_MATH_EDGE and conf >= FULL_MATH_CONF:
         logger.info(f"FULL MATH BET [{niche.upper()}]: edge={best_edge:.1%} conf={conf:.0%} — pure math")
@@ -231,7 +231,7 @@ def _process_with_ai(market, model_result, edge_result,
         )
         stats['sonnet_called'] += 1
     else:
-        skip_reason = f"Edge {best_edge:.1%} < 4% or conf {conf:.0%} < 25%"
+        skip_reason = f"Edge {best_edge:.1%} < 4% or conf {conf:.0%} < 15%"
         record_signal(
             session,
             market_id=market.market_id,
