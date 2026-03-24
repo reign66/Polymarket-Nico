@@ -1,8 +1,8 @@
 cycle_interval_minutes: 30
 api_limits:
-  max_haiku_calls_per_day: 100
+  max_haiku_calls_per_day: 0
   max_haiku_classify_per_day: 0
-  max_sonnet_calls_per_day: 20
+  max_sonnet_calls_per_day: 0
   max_monthly_cost_eur: 5
 filters:
   min_volume_usd: 1000
@@ -14,15 +14,15 @@ filters:
   low_price_warning: 0.08  # V2.3: log a warning when entry price < 8¢
   price_change_threshold: 0.02
   min_math_edge: 0.03
-  min_math_confidence: 0.25   # V2.3: baissé de 0.45 → GenericModel (conf=0.30) peut maintenant passer
+  min_math_confidence: 0.20   # V2.4: baissé à 0.20 pour plus de signaux
   min_confirmed_edge: 0.03
-  min_final_edge: 0.06
+  min_final_edge: 0.04   # V2.4: baissé de 0.06 → 0.04 pour plus de positions
 kelly:
   fraction: 0.25
   max_bet_pct: 0.05
 risk:
   daily_loss_limit_pct: 0.10
-  weekly_drawdown_limit_pct: 0.25
+  weekly_drawdown_limit_pct: 0.50   # V2.4: relevé de 0.25 → 0.50
   max_open_positions: 20
   small_cap_daily_pct: 0.95
   standard_daily_pct: 0.95

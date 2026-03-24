@@ -33,10 +33,12 @@ class RiskManager:
                 return (False, 0, f"Daily loss limit: {daily_pnl:.2f} >= {daily_limit:.2f}")
 
             # b) Weekly drawdown
-            weekly_dd = get_weekly_drawdown_pct(self.session, capital)
-            weekly_limit = self.risk_config.get('weekly_drawdown_limit_pct', 0.25)
+            # NOTE: get_weekly_drawdown_pct returns a 0-100 percentage value.
+            # weekly_drawdown_limit_pct in config is a fraction (e.g. 0.25 = 25%).
+            weekly_dd = get_weekly_drawdown_pct(self.session, capital)  # e.g. 12.5 means 12.5%
+            weekly_limit = self.risk_config.get('weekly_drawdown_limit_pct', 0.25) * 100  # convert to pct
             if weekly_dd >= weekly_limit:
-                return (False, 0, f"Weekly drawdown: {weekly_dd:.1%} >= {weekly_limit:.0%}")
+                return (False, 0, f"Weekly drawdown: {weekly_dd:.1f}% >= {weekly_limit:.0f}%")
 
             # c) Max open positions
             open_pos = get_open_positions(self.session)
@@ -68,10 +70,10 @@ class RiskManager:
                     bonus = self.risk_config.get('exception_bonus_pct', 0.20)
                     daily_cap_limit *= (1 + bonus)
 
-            # g) Drawdown adjustments
-            if weekly_dd > 0.15:
+            # g) Drawdown adjustments (weekly_dd is in 0-100 percentage units)
+            if weekly_dd > 15:
                 daily_cap_limit /= 2
-            elif weekly_dd > 0.10:
+            elif weekly_dd > 10:
                 daily_cap_limit *= 0.75
 
             if daily_exp + amount > daily_cap_limit:

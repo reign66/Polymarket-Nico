@@ -311,8 +311,7 @@
     .step-filtered   { background: linear-gradient(90deg, #374151, #6B7280); color: #E5E7EB; }
     .step-classified { background: linear-gradient(90deg, #1D4ED8, #3B82F6); color: #BFDBFE; }
     .step-math       { background: linear-gradient(90deg, #5B21B6, #7C3AED); color: #DDD6FE; }
-    .step-haiku      { background: linear-gradient(90deg, #B45309, #D97706); color: #FDE68A; }
-    .step-sonnet     { background: linear-gradient(90deg, #065F46, #059669); color: #A7F3D0; }
+    /* Haiku and Sonnet removed — Math-first mode */
     .step-bet        { background: linear-gradient(90deg, #065F46, #00F5A0); color: #111827; }
 
     .funnel-summary {
@@ -992,7 +991,7 @@
             <span class="clf-value" id="clf-gamma">--</span>
           </div>
           <div class="classifier-item">
-            <span class="clf-label">Via Haiku</span>
+            <span class="clf-label">Via Gamma/KW</span>
             <span class="clf-value" id="clf-haiku">--</span>
           </div>
           <div class="classifier-item">
@@ -1014,7 +1013,7 @@
             <tr>
               <th>Niche / Modèle</th>
               <th>Edges trouvés</th>
-              <th>Envoyés Haiku</th>
+              <th>Signaux IA</th>
               <th>Bets</th>
               <th>Conf. moy.</th>
             </tr>
@@ -1196,8 +1195,6 @@
       { key: 'filtered',   label: 'Filtre Méca',     cls: 'step-filtered' },
       { key: 'classified', label: 'Classifiés',      cls: 'step-classified' },
       { key: 'math_edge',  label: 'Edge Math',       cls: 'step-math' },
-      { key: 'haiku',      label: 'Haiku AI',        cls: 'step-haiku' },
-      { key: 'sonnet',     label: 'Sonnet AI',       cls: 'step-sonnet' },
       { key: 'bet',        label: 'Bets Placés',     cls: 'step-bet' },
     ];
 
@@ -1401,7 +1398,7 @@
         // Summary stats
         if (summary) {
           const convRate = base > 0 ? ((data.bet || 0) / base * 100).toFixed(2) : '0.00';
-          const aiCalls = (data.haiku || 0) + (data.sonnet || 0);
+          const aiCalls = data.bet || 0;
           summary.innerHTML = `
             <div class="funnel-stat">Scannés aujourd'hui: <strong>${data.fetched || 0}</strong></div>
             <div class="funnel-stat">Bets placés: <strong>${data.bet || 0}</strong></div>
@@ -1502,13 +1499,8 @@
           const nicheConfig = NICHE_COLORS[s.niche];
           const nicheCss = nicheConfig ? nicheConfig.css : 'niche-default';
 
-          const haiku = s.haiku_called
-            ? `<span class="ai-pill ${s.haiku_confirmed ? 'ai-ok' : 'ai-no'}">Haiku ${s.haiku_confirmed ? '✓' : '✗'}</span>`
-            : `<span class="ai-pill ai-none">Haiku —</span>`;
-
-          const sonnet = s.sonnet_called
-            ? `<span class="ai-pill ${s.sonnet_go ? 'ai-ok' : 'ai-no'}">Sonnet ${s.sonnet_go ? '✓' : '✗'}</span>`
-            : `<span class="ai-pill ai-none">Sonnet —</span>`;
+          const haiku = '';
+          const sonnet = '';
 
           const skipReason = s.skip_reason ? `<span class="signal-meta-item">Raison: <strong>${esc(s.skip_reason)}</strong></span>` : '';
           const direction = s.direction && s.direction !== '—'
@@ -1834,7 +1826,7 @@
           <tr>
             <td>${esc(MODEL_NAMES[row.niche] || row.niche)}</td>
             <td>${row.edges_found}</td>
-            <td>${row.haiku_calls}</td>
+            <td>${row.edges_found > 0 ? Math.round(row.bets / row.edges_found * 100) + '%' : '—'}</td>
             <td>${row.bets}</td>
             <td>${(row.avg_confidence * 100).toFixed(0)}%</td>
           </tr>

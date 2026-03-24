@@ -463,30 +463,27 @@ def api_api_costs():
     """Return API cost breakdown: monthly total, per-model daily usage."""
     session = None
     try:
-        from core.database import get_monthly_api_cost, get_daily_api_calls
+        from core.database import get_monthly_api_cost
 
         session = get_session()
         if not session:
             return jsonify({
                 "monthly_cost_usd": 0.0, "monthly_cost_eur": 0.0,
                 "budget_eur": API_BUDGET_EUR, "usage_pct": 0.0,
-                "haiku_today": 0, "sonnet_today": 0,
+                "haiku_today": 0, "sonnet_today": 0,  # disabled
             })
 
         monthly_cost_usd = get_monthly_api_cost(session)
         monthly_cost_eur = round(monthly_cost_usd * EUR_USD_RATE, 4)
         usage_pct = round(monthly_cost_eur / API_BUDGET_EUR * 100, 1) if API_BUDGET_EUR > 0 else 0.0
 
-        haiku_today = get_daily_api_calls(session, "haiku")
-        sonnet_today = get_daily_api_calls(session, "sonnet")
-
         return jsonify({
             "monthly_cost_usd": round(monthly_cost_usd, 4),
             "monthly_cost_eur": monthly_cost_eur,
             "budget_eur": API_BUDGET_EUR,
             "usage_pct": usage_pct,
-            "haiku_today": haiku_today,
-            "sonnet_today": sonnet_today,
+            "haiku_today": 0,
+            "sonnet_today": 0,
         })
 
     except Exception as exc:
